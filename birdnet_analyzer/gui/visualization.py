@@ -933,6 +933,7 @@ def build_visualization_tab():
         time_start_minute,
         time_end_hour,
         time_end_minute,
+        correctness_mode="Ignore correctness flags"  # Add correctness_mode parameter with default
     ):
         """Plot spatial distribution of predictions by class."""
         if not proc_state or not proc_state.processor:
@@ -973,6 +974,20 @@ def build_visualization_tab():
             # Apply class-specific confidence threshold filter using validated thresholds
             conf_col = proc_state.processor.get_column_name("Confidence")
             class_col = proc_state.processor.get_column_name("Class")
+            corr_col = proc_state.processor.get_column_name("Correctness")
+            
+            # Check if correctness column exists; if not, try both capitalization forms
+            if corr_col not in df.columns:
+                # Try both 'correctness' and 'Correctness'
+                alt_corr_col = 'correctness' if corr_col == 'Correctness' else 'Correctness'
+                if alt_corr_col in df.columns:
+                    print(f"Switching to alternative correctness column: '{alt_corr_col}'")
+                    corr_col = alt_corr_col
+                else:
+                    # Create an empty correctness column if none exists
+                    print(f"No correctness column found, creating a placeholder")
+                    df[corr_col] = None
+                    
             df = apply_class_thresholds(df, validated_thresholds_df, class_col, conf_col)
             
             # Apply date and time filters
@@ -985,6 +1000,21 @@ def build_visualization_tab():
                 time_end_hour, 
                 time_end_minute
             )
+            
+            # Normalize correctness values
+            df[corr_col] = df[corr_col].map({
+                'true': True, 'True': True, True: True, 1: True,
+                'false': False, 'False': False, False: False, 0: False,
+                'nan': None, 'none': None, '': None, 'null': None, 'NA': None
+            }, na_action='ignore')
+            
+            # Apply correctness filter based on selected mode
+            if correctness_mode == "Show only correct":
+                df = df[df[corr_col] == True]
+            elif correctness_mode == "Show only incorrect":
+                df = df[df[corr_col] == False]
+            elif correctness_mode == "Show only unspecified":
+                df = df[df[corr_col].isna()]
             
             class_col = proc_state.processor.get_column_name("Class")
             # Ensure that latitude and longitude exist in the data after merge
@@ -1692,6 +1722,7 @@ def build_visualization_tab():
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
+                correctness_mode,  # Add correctness_mode input
             ],
             outputs=[processor_state, map_output]
         )
