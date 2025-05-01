@@ -1509,8 +1509,7 @@ def build_visualization_tab():
               <span style="font-weight: bold;">⚠️ Warning:</span> Visualizations should be interpreted with caution. 
               Please verify model performance for your target species and environment before drawing conclusions. 
               Confidence thresholds significantly affect detection rates - lower values increase detections but may 
-              introduce false positives. Temporal and spatial patterns may reflect recording methods rather than 
-              actual species behavior.
+              introduce false positives.
             </div>
             """
         )
