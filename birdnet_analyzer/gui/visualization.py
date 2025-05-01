@@ -1091,6 +1091,7 @@ def build_visualization_tab():
         time_start_minute,
         time_end_hour,
         time_end_minute,
+        correctness_mode="Ignore correctness flags"  # Add correctness_mode parameter with default
     ):
         """Creates time distribution plot with all filters applied."""
         if not proc_state or not proc_state.processor:
@@ -1108,6 +1109,20 @@ def build_visualization_tab():
         # Apply class and recording filters
         col_class = proc_state.processor.get_column_name("Class")
         conf_col = proc_state.processor.get_column_name("Confidence")
+        corr_col = proc_state.processor.get_column_name("Correctness")
+        
+        # Check if correctness column exists; if not, try both capitalization forms
+        if corr_col not in df.columns:
+            # Try both 'correctness' and 'Correctness'
+            alt_corr_col = 'correctness' if corr_col == 'Correctness' else 'Correctness'
+            if alt_corr_col in df.columns:
+                print(f"Switching to alternative correctness column: '{alt_corr_col}'")
+                corr_col = alt_corr_col
+            else:
+                # Create an empty correctness column if none exists
+                print(f"No correctness column found, creating a placeholder")
+                df[corr_col] = None
+                
         if selected_classes_list:
             df = df[df[col_class].isin(selected_classes_list)]
         if selected_recordings_list:
@@ -1131,6 +1146,21 @@ def build_visualization_tab():
             time_end_hour,
             time_end_minute
         )
+        
+        # Normalize correctness values
+        df[corr_col] = df[corr_col].map({
+            'true': True, 'True': True, True: True, 1: True,
+            'false': False, 'False': False, False: False, 0: False,
+            'nan': None, 'none': None, '': None, 'null': None, 'NA': None
+        }, na_action='ignore')
+        
+        # Apply correctness filter based on selected mode
+        if correctness_mode == "Show only correct":
+            df = df[df[corr_col] == True]
+        elif correctness_mode == "Show only incorrect":
+            df = df[df[corr_col] == False]
+        elif correctness_mode == "Show only unspecified":
+            df = df[df[corr_col].isna()]
         
         if df.empty:
             raise gr.Error("No data matches the selected filters")
@@ -1659,6 +1689,7 @@ def build_visualization_tab():
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
+                correctness_mode,  # Add correctness_mode input
             ],
             outputs=[time_distribution_output]
         )
