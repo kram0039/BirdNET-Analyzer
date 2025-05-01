@@ -36,7 +36,7 @@ class DataProcessor:
     # Default column mappings for predictions
     DEFAULT_COLUMNS_PREDICTIONS = {
         "Start Time": "Start Time",
-        "End Time": "End Time",
+        "End Time": "End Time",  # Keep this for backwards compatibility
         "Class": "Class",
         "Recording": "Recording",
         "Duration": "Duration",
@@ -107,8 +107,8 @@ class DataProcessor:
         Raises:
             ValueError: If required columns are missing or have None values.
         """
-        # Required columns for predictions
-        required_columns = ["Start Time", "End Time", "Class"]
+        # Required columns for predictions - removed "End Time" from required list
+        required_columns = ["Start Time", "Class"]
 
         missing_pred_columns = [
             col

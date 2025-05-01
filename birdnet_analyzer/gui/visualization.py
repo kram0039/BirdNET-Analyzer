@@ -156,8 +156,7 @@ def build_visualization_tab():
 
     # Default columns for predictions (kept for user convenience)
     prediction_default_columns = {
-        "Start Time": "Begin Time (s)",
-        "End Time": "End Time (s)",
+        "Start Time": "File Offset (s)",
         "Class": "Common Name",
         "Recording": "Begin Path",
         "Confidence": "Confidence",
@@ -173,7 +172,6 @@ def build_visualization_tab():
 
     localized_column_labels = {
         "Start Time": loc.localize("eval-tab-column-start-time-label"),
-        "End Time": loc.localize("eval-tab-column-end-time-label"),
         "Class": loc.localize("eval-tab-column-class-label"),
         "Recording": loc.localize("eval-tab-column-recording-label"),
         "Confidence": loc.localize("eval-tab-column-confidence-label"),
@@ -213,7 +211,6 @@ def build_visualization_tab():
     def initialize_processor(
         prediction_files,
         pred_start_time,
-        pred_end_time,
         pred_class,
         pred_confidence,
         pred_recording,
@@ -238,8 +235,6 @@ def build_visualization_tab():
             for key, default in prediction_default_columns.items():
                 if key == "Start Time":
                     cols_pred[key] = pred_start_time or default
-                elif key == "End Time":
-                    cols_pred[key] = pred_end_time or default
                 elif key == "Class":
                     cols_pred[key] = pred_class or default
                 elif key == "Confidence":
@@ -291,7 +286,7 @@ def build_visualization_tab():
         cols = get_columns_from_uploaded_files(uploaded_files)
         cols = [""] + cols
         updates = []
-        for label in ["Start Time", "End Time", "Class", "Confidence", "Recording", "Correctness"]:
+        for label in ["Start Time", "Class", "Confidence", "Recording", "Correctness"]:
             default_val = prediction_default_columns.get(label)
             val = default_val if default_val in cols else None
             updates.append(gr.update(choices=cols, value=val))
@@ -329,7 +324,6 @@ def build_visualization_tab():
         prediction_files,
         metadata_files,
         pred_start_time,
-        pred_end_time,
         pred_class,
         pred_confidence,
         pred_recording,
@@ -351,7 +345,6 @@ def build_visualization_tab():
         avail_classes, avail_recordings, proc, prediction_dir = initialize_processor(
             prediction_files,
             pred_start_time,
-            pred_end_time,
             pred_class,
             pred_confidence,
             pred_recording,
@@ -1360,7 +1353,7 @@ def build_visualization_tab():
             with gr.Accordion(loc.localize("eval-tab-prediction-col-accordion-label"), open=True):
                 with gr.Row():
                     prediction_columns: dict[str, gr.Dropdown] = {}
-                    for col in ["Start Time", "End Time", "Class", "Confidence", "Recording", "Correctness"]:
+                    for col in ["Start Time", "Class", "Confidence", "Recording", "Correctness"]:
                         prediction_columns[col] = gr.Dropdown(choices=[], label=localized_column_labels.get(col, col))
 
         # Metadata columns box
@@ -1570,13 +1563,13 @@ def build_visualization_tab():
                     files = get_selection_tables(folder)
                     files_to_display = files[:100] + [["..."]] if len(files) > 100 else files
                     return [files, files_to_display, gr.update(visible=True)] + on_select(files)
-                return ["", [[loc.localize("eval-tab-no-files-found")]], gr.update(visible=False)] + [gr.update(visible=False)] * 6
+                return ["", [[loc.localize("eval-tab-no-files-found")]], gr.update(visible=False)] + [gr.update(visible=False)] * 5
             return select_directory_on_empty
 
         prediction_select_directory_btn.click(
             get_selection_func("eval-predictions-dir", update_prediction_columns),
             outputs=[prediction_files_state, prediction_directory_input, prediction_group]
-            + [prediction_columns[label] for label in ["Start Time", "End Time", "Class", "Confidence", "Recording", "Correctness"]],
+            + [prediction_columns[label] for label in ["Start Time", "Class", "Confidence", "Recording", "Correctness"]],
             show_progress=True,
         )
 
@@ -1606,7 +1599,6 @@ def build_visualization_tab():
             prediction_files_state,
             metadata_files_state,
             prediction_columns["Start Time"],
-            prediction_columns["End Time"],
             prediction_columns["Class"],
             prediction_columns["Confidence"],
             prediction_columns["Recording"],
@@ -1623,7 +1615,6 @@ def build_visualization_tab():
                     prediction_files_state,
                     metadata_files_state,
                     prediction_columns["Start Time"],
-                    prediction_columns["End Time"],
                     prediction_columns["Class"],
                     prediction_columns["Confidence"],
                     prediction_columns["Recording"],
