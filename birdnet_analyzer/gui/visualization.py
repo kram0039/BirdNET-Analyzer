@@ -621,37 +621,7 @@ def build_visualization_tab():
         # Create the plot - different approach based on correctness mode
         fig = go.Figure()
         
-        if correctness_mode == "Distinguish all":
-            # For each class, create separate traces for each correctness state
-            for cls in all_classes:
-                cls_color = color_map.get(cls)
-                cls_data = df[df[col_class] == cls]
-                
-                # For each correctness state, create a separate trace
-                for corr_state, symbol in correctness_symbols.items():
-                    state_data = cls_data[cls_data['correctness_display'] == corr_state]
-                    if not state_data.empty:
-                        fig.add_trace(go.Scatter(
-                            x=state_data['date'],
-                            y=state_data['decimal_time'],
-                            mode='markers',
-                            name=f"{cls} - {corr_state}",
-                            marker=dict(
-                                color=cls_color,
-                                symbol=symbol,
-                                size=8,
-                                opacity=0.3,
-                            ),
-                            hovertemplate=(
-                                "Date: %{x|%Y-%m-%d}<br>" +
-                                "Time: %{y:.2f} hrs<br>" +
-                                "Species: " + cls + "<br>" +
-                                "Status: " + corr_state + "<br>" +
-                                "Confidence: " + state_data[conf_col].astype(str) + "<br>" +
-                                "<extra></extra>"
-                            )
-                        ))
-        elif correctness_mode == "Show only correct":
+        if correctness_mode == "Show only correct":
             # Use the same marker as "Correct" in distinguish mode (circle)
             for cls in all_classes:
                 cls_color = color_map.get(cls)
@@ -1514,9 +1484,8 @@ def build_visualization_tab():
                         "Ignore correctness flags",
                         "Show only correct",
                         "Show only incorrect",
-                        "Show only unspecified",
-                        "Distinguish all"
-                    ],
+                        "Show only unspecified"
+                    ],  # Removed "Distinguish all" option
                     value="Ignore correctness flags",
                     label="Correctness Filter Mode",
                     info="Select how to handle the correctness flags in visualizations",
@@ -1864,125 +1833,36 @@ def build_visualization_tab():
             elif correctness_mode == "Show only unspecified":
                 df = df[(df[corr_col].isna()) | (df[corr_col] == '') | (df[corr_col] == 'nan')]
                 print(f"Records after filtering for unspecified: {len(df)}")
-            # "Ignore correctness flags" and "Distinguish all" modes don't filter the data
+            # "Ignore correctness flags" mode doesn't filter the data
             
             if df.empty:
                 raise gr.Error("No data matches the selected filters")
                 
-            # Handle the distinction between modes for counting
-            if correctness_mode == "Distinguish all":
-                # Create a human-readable correctness column for display
-                df['correctness_display'] = df[corr_col].apply(
-                    lambda x: "Correct" if x == True else "Incorrect" if x == False else "Unspecified"
-                )
-                
-                # Get all unique classes
-                classes = df[col_class].unique()
-                
-                # Create a new DataFrame for results with one row per species
-                result_rows = []
-                
-                # Calculate the total number of detections
-                total_detections = len(df)
-                
-                # For each class, calculate counts by correctness value
-                for cls in classes:
-                    class_df = df[df[col_class] == cls]
-                    
-                    # Count by correctness
-                    correct_count = sum(class_df['correctness_display'] == "Correct")
-                    incorrect_count = sum(class_df['correctness_display'] == "Incorrect")
-                    unspecified_count = sum(class_df['correctness_display'] == "Unspecified")
-                    total_count = len(class_df)
-                    
-                    # Calculate percentages of total detections
-                    correct_pct = f"{(correct_count / total_detections * 100):.1f}%" if total_detections else "0.0%"
-                    incorrect_pct = f"{(incorrect_count / total_detections * 100):.1f}%" if total_detections else "0.0%"
-                    unspecified_pct = f"{(unspecified_count / total_detections * 100):.1f}%" if total_detections else "0.0%"
-                    total_pct = f"{(total_count / total_detections * 100):.1f}%" if total_detections else "0.0%"
-                    
-                    # Add row for this class
-                    result_rows.append({
-                        "Species": cls,
-                        "Correct Count": correct_count,
-                        "Correct %": correct_pct,
-                        "Incorrect Count": incorrect_count,
-                        "Incorrect %": incorrect_pct,
-                        "Unspecified Count": unspecified_count,
-                        "Unspecified %": unspecified_pct,
-                        "Total Count": total_count,
-                        "Total %": total_pct,
-                    })
-                
-                # Create DataFrame and sort by total count (descending)
-                result_df = pd.DataFrame(result_rows)
-                result_df = result_df.sort_values("Total Count", ascending=False)
-                
-                # Calculate grand totals
-                correct_total = sum(df['correctness_display'] == "Correct")
-                incorrect_total = sum(df['correctness_display'] == "Incorrect")
-                unspecified_total = sum(df['correctness_display'] == "Unspecified")
-                
-                # Add grand total row
-                grand_total = {
-                    "Species": "Grand Total",
-                    "Correct Count": correct_total,
-                    "Correct %": f"{(correct_total / total_detections * 100):.1f}%" if total_detections else "0.0%",
-                    "Incorrect Count": incorrect_total,
-                    "Incorrect %": f"{(incorrect_total / total_detections * 100):.1f}%" if total_detections else "0.0%",
-                    "Unspecified Count": unspecified_total,
-                    "Unspecified %": f"{(unspecified_total / total_detections * 100):.1f}%" if total_detections else "0.0%",
-                    "Total Count": total_detections,
-                    "Total %": "100.0%",
-                }
-                
-                # Concatenate with the grand total row
-                result_df = pd.concat([result_df, pd.DataFrame([grand_total])], ignore_index=True)
-                
-                # Organize columns 
-                column_order = [
-                    "Species", 
-                    "Correct Count", "Correct %",
-                    "Incorrect Count", "Incorrect %", 
-                    "Unspecified Count", "Unspecified %",
-                    "Total Count", "Total %"
-                ]
-                result_df = result_df[column_order]
-                
-            else:
-                # Standard counting logic for other modes (no distinction by correctness)
-                class_counts = df[col_class].value_counts().reset_index()
-                class_counts.columns = ["Species", "Count"]
-                
-                # Add percentage column
-                total = class_counts["Count"].sum()
-                class_counts["Percentage"] = (class_counts["Count"] / total * 100).round(1).astype(str) + "%"
-                
-                # Sort by detection count (descending)
-                class_counts = class_counts.sort_values("Count", ascending=False)
-                
-                # Add total row
-                total_row = pd.DataFrame({
-                    "Species": ["Total"],
-                    "Count": [total],
-                    "Percentage": ["100.0%"]
-                })
-                
-                result_df = pd.concat([class_counts, total_row])
+            # Standard counting logic (no distinction by correctness)
+            class_counts = df[col_class].value_counts().reset_index()
+            class_counts.columns = ["Species", "Count"]
+            
+            # Add percentage column
+            total = class_counts["Count"].sum()
+            class_counts["Percentage"] = (class_counts["Count"] / total * 100).round(1).astype(str) + "%"
+            
+            # Sort by detection count (descending)
+            class_counts = class_counts.sort_values("Count", ascending=False)
+            
+            # Add total row
+            total_row = pd.DataFrame({
+                "Species": ["Total"],
+                "Count": [total],
+                "Percentage": ["100.0%"]
+            })
+            
+            result_df = pd.concat([class_counts, total_row])
             
             # Set column widths for better display
             column_widths = {
                 "Species": "200px",
                 "Count": "110px",
-                "Percentage": "110px",
-                "Correct Count": "110px", 
-                "Correct %": "80px",
-                "Incorrect Count": "130px", 
-                "Incorrect %": "90px",
-                "Unspecified Count": "150px", 
-                "Unspecified %": "110px",
-                "Total Count": "110px", 
-                "Total %": "80px"
+                "Percentage": "110px"
             }
             
             return gr.update(
