@@ -24,6 +24,8 @@ class TemporalScatterPlotter:
         self.class_col = class_col
         self.conf_col = conf_col
         self.color_map = {}
+        # Match the base colors with other plotters
+        self.base_colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink']
         
         # Ensure required columns exist
         if 'prediction_time' not in self.data.columns or self.data['prediction_time'].isnull().all():
@@ -39,9 +41,10 @@ class TemporalScatterPlotter:
     
     def _get_color_map(self, classes: List[str]) -> Dict[str, str]:
         """Create consistent color mapping for classes."""
-        base_colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink']
-        colors = base_colors * (1 + len(classes) // len(base_colors))
-        self.color_map = {cls: colors[i] for i, cls in enumerate(sorted(classes))}
+        # Sort classes alphabetically first - ensuring consistent ordering with other plotters
+        sorted_classes = sorted(classes)
+        colors = self.base_colors * (1 + len(sorted_classes) // len(self.base_colors))
+        self.color_map = {cls: colors[i] for i, cls in enumerate(sorted_classes)}
         return self.color_map
 
     def plot(self, title: str = "Temporal Distribution of Detections") -> go.Figure:
@@ -57,17 +60,20 @@ class TemporalScatterPlotter:
         if self.data.empty:
             raise ValueError("No data to plot")
         
-        # Get or create color map
+        # Get all classes and sort them alphabetically for consistent ordering
         all_classes = sorted(self.data[self.class_col].unique())
+        
+        # Get or create color map
         color_map = self.color_map or self._get_color_map(all_classes)
         
-        # Create the scatter plot
+        # Create the scatter plot - explicitly setting category_orders for consistent legend
         fig = px.scatter(
             self.data,
             x='date',
             y='decimal_time',
             color=self.class_col,
             color_discrete_map=color_map,
+            category_orders={self.class_col: all_classes},  # Explicitly set order
             hover_data=[self.class_col, self.conf_col],
             opacity=0.3,
             title=title
@@ -97,7 +103,8 @@ class TemporalScatterPlotter:
             legend=dict(
                 x=1.02, 
                 y=1,
-                itemsizing='constant'  # Makes legend symbols the same size
+                itemsizing='constant',  # Makes legend symbols the same size
+                traceorder='normal'     # Use the order specified in category_orders
             ),
             margin=dict(r=150),  # Add right margin for legend
         )
