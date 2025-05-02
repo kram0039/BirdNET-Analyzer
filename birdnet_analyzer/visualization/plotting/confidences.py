@@ -3,13 +3,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
-from scipy.stats import gaussian_kde
 from typing import List, Optional, Dict
 
 
 class ConfidencePlotter:
     """
-    A helper class to plot distribution (ridgeline or stacked) plots of confidence scores
+    A helper class to plot distribution (histogram) plots of confidence scores
     for each class using only matplotlib and plotly.
     """
 
@@ -45,95 +44,6 @@ class ConfidencePlotter:
         base_colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink']
         colors = base_colors * (1 + len(classes) // len(base_colors))
         return {cls: colors[i] for i, cls in enumerate(sorted(classes))}
-
-    def plot_ridgeline_matplotlib(
-        self,
-        figsize=(6, 8),
-        bandwidth=0.1,
-        overlap=0.6,
-        fill=True,
-        alpha=0.6,
-        cmap="Spectral_r",
-        title="Ridgeline Plot of Confidence Scores"
-    ):
-        """
-        Creates a ridgeline plot using matplotlib and scipy's gaussian_kde for each class.
-
-        Args:
-            figsize (tuple): Figure size (width, height).
-            bandwidth (float): Optional bandwidth scaling for KDE smoothing. 
-                               This can be adjusted if the default smoothing is too coarse or too fine.
-            overlap (float): Vertical overlap between consecutive distributions (0->none, 1->complete).
-            fill (bool): Whether to fill under the KDE curve.
-            alpha (float): Transparency of the fill/line.
-            cmap (str): Colormap name for the ridgeline gradient.
-            title (str): Title for the entire figure.
-        """
-        # Prepare figure
-        fig, ax = plt.subplots(figsize=figsize)
-
-        # Choose a colormap
-        cm = plt.get_cmap(cmap)
-        num_classes = len(self.classes)
-
-        # For vertical spacing, let's define a y‑offset for each class
-        # We'll plot from top to bottom
-        y_offsets = np.linspace(0, -(num_classes-1)*overlap, num_classes)
-
-        # Plot each class
-        for i, cls in enumerate(self.classes):
-            cls_data = self.data.loc[self.data[self.class_col] == cls, self.conf_col].dropna().values
-            if len(cls_data) < 2:
-                # We need at least 2 points for a KDE
-                continue
-
-            # Compute Gaussian KDE
-            kde = gaussian_kde(cls_data)
-            if bandwidth:
-                # Adjust the covariance factor if a bandwidth is given
-                kde.set_bandwidth(bw_method=kde.factor * bandwidth)
-
-            # Evaluate KDE on a grid from min to max
-            x_min, x_max = cls_data.min(), cls_data.max()
-            x_grid = np.linspace(x_min, x_max, 200)
-            y_grid = kde.evaluate(x_grid)
-
-            # Vertical offset for the ridgeline
-            y_offset = y_offsets[i]
-            color = cm(i / num_classes)
-
-            if fill:
-                ax.fill_between(
-                    x_grid,
-                    y_offset,
-                    y_grid + y_offset,
-                    color=color,
-                    alpha=alpha
-                )
-            ax.plot(
-                x_grid,
-                y_grid + y_offset,
-                color=color,
-                alpha=alpha,
-                label=cls if i == 0 else None  # only label once if desired
-            )
-
-            # Label for each class on the left side
-            ax.text(
-                x_min,
-                y_offset + 0.02,
-                cls,
-                ha="right",
-                va="bottom",
-                fontsize=9
-            )
-
-        ax.set_yticks([])
-        ax.set_ylabel("")
-        ax.set_xlabel("Confidence Score")
-        ax.set_title(title)
-        plt.tight_layout()
-        plt.show()
 
     def plot_histogram_matplotlib(
         self,
@@ -240,66 +150,6 @@ class ConfidencePlotter:
             legend=dict(x=1.02, y=1),
             margin=dict(r=150),
             showlegend=True
-        )
-        
-        return fig
-
-    def plot_smooth_distribution_plotly(
-        self,
-        bandwidth: float = 0.2,
-        title: str = "Smooth Distribution of Confidence Scores",
-        classes: List[str] = None,
-        color_map: Dict[str, str] = None
-    ) -> go.Figure:
-        """
-        Creates a smooth distribution plot using plotly.
-
-        Args:
-            bandwidth: Width of the smoothing window
-            title: Plot title
-            classes: List of classes to plot (defaults to all)
-            color_map: Dict mapping class names to colors
-        """
-        if not classes:
-            classes = sorted(self.data[self.class_col].unique())
-            
-        fig = go.Figure()
-        dash_patterns = ['solid', 'dash', 'dot', 'dashdot', 'longdash', 'longdashdot']
-
-        for i, class_name in enumerate(classes):
-            class_data = self.data[self.data[self.class_col] == class_name][self.conf_col].dropna()
-            if len(class_data) < 2:
-                continue
-                
-            kde = gaussian_kde(class_data, bw_method=bandwidth)
-            x_range = np.linspace(class_data.min(), class_data.max(), 200)
-            y_values = kde(x_range)
-            
-            color = color_map.get(class_name) if color_map else None
-            fig.add_trace(
-                go.Scatter(
-                    x=x_range,
-                    y=y_values,
-                    mode="lines",
-                    fill="tozeroy",
-                    name=str(class_name),
-                    line=dict(
-                        color=color,
-                        dash=dash_patterns[i % len(dash_patterns)]
-                    )
-                )
-            )
-
-        if len(fig.data) == 0:
-            raise ValueError("Not enough data points for any of the selected classes.")
-
-        fig.update_layout(
-            title=title,
-            xaxis_title="Confidence Score",
-            yaxis_title="Estimated Density",
-            legend_title="Class",
-            legend=dict(x=1.02, y=1),
-            margin=dict(r=150)  # add right margin for legend
         )
         
         return fig
