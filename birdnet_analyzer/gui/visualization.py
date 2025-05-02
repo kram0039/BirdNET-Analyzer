@@ -18,6 +18,7 @@ from birdnet_analyzer.visualization.data_processor import DataProcessor
 from birdnet_analyzer.visualization.plotting.confidences import ConfidencePlotter
 from birdnet_analyzer.visualization.plotting.time_distributions import TimeDistributionPlotter
 from birdnet_analyzer.visualization.plotting.temporal_scatter import TemporalScatterPlotter
+from birdnet_analyzer.visualization.plotting.spatial_distribution import SpatialDistributionPlotter
 
 
 class ProcessorState(typing.NamedTuple):
@@ -698,7 +699,7 @@ def build_visualization_tab():
         time_start_minute,
         time_end_hour,
         time_end_minute,
-        correctness_mode="Ignore correctness flags"  # Add correctness_mode parameter with default
+        correctness_mode="Ignore correctness flags"
     ):
         """Plot spatial distribution of predictions by class."""
         if not proc_state or not proc_state.processor:
@@ -781,7 +782,6 @@ def build_visualization_tab():
             elif correctness_mode == "Show only unspecified":
                 df = df[df[corr_col].isna()]
             
-            class_col = proc_state.processor.get_column_name("Class")
             # Ensure that latitude and longitude exist in the data after merge
             for col in ['latitude', 'longitude']:
                 if col not in df.columns:
@@ -790,141 +790,49 @@ def build_visualization_tab():
             # Create aggregated dataframe with counts by location and class
             agg_df = df.groupby(['site_name', 'latitude', 'longitude', class_col]).size().reset_index(name='count')
             
-            # Create or retrieve color map for consistency with other plots
-            all_classes = sorted(df[class_col].unique())
-            color_map = {}
+            # Get existing color map or create one
+            plotter = SpatialDistributionPlotter(class_col=class_col)
             
-            # Use existing color map from state if available
-            if proc_state.color_map:
-                color_map = proc_state.color_map.copy()
-                # Add any new classes that aren't in the existing map
-                base_colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink']
-                next_color_idx = len(color_map)
-                for cls in all_classes:
-                    if cls not in color_map:
-                        color_map[cls] = base_colors[next_color_idx % len(base_colors)]
-                        next_color_idx += 1
+            # Init color map with TimeDistributionPlotter's exact algorithm if needed
+            if not proc_state.color_map:
+                # If we have no color map yet, create one using all classes for consistency
+                all_classes = sorted(df[class_col].unique())
+                # Get a TimeDistributionPlotter to initialize colors consistently
+                time_plotter = TimeDistributionPlotter(data=df, class_col=class_col)
+                shared_color_map = time_plotter._get_color_map(all_classes)
+                # Debug output
+                print("Creating new color map from TimeDistributionPlotter:")
+                for cls in sorted(all_classes):
+                    print(f"  {cls}: {shared_color_map.get(cls)}")
+                plotter.color_map = shared_color_map
             else:
-                # Create new color map using same method as ConfidencePlotter
-                base_colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink']
-                colors = base_colors * (1 + len(all_classes) // len(base_colors))
-                color_map = {cls: colors[i] for i, cls in enumerate(all_classes)}
-                
-            # Special case for empty results
-            if agg_df.empty:
-                # If no detections match filters, still show the locations
-                agg_df = all_locations_df.copy()
-                agg_df[class_col] = "No Detections"
-                agg_df['count'] = 0
-            else:
-                # Find locations with no detections in the filtered dataset
-                active_locations = set(agg_df[['site_name', 'latitude', 'longitude']].itertuples(index=False, name=None))
-                all_locations = set(all_locations_df.itertuples(index=False, name=None))
-                missing_locations = all_locations - active_locations
-                
-                # Create DataFrame for locations with no detections
-                if missing_locations:
-                    missing_df = pd.DataFrame(list(missing_locations), columns=['site_name', 'latitude', 'longitude'])
-                    missing_df[class_col] = "No Detections"
-                    missing_df['count'] = 0
-                    
-                    # Combine with aggregated data
-                    agg_df = pd.concat([agg_df, missing_df], ignore_index=True)
+                # Use existing color map - fix color consistency
+                print("Using existing color map:")
+                for cls in sorted(proc_state.color_map.keys()):
+                    print(f"  {cls}: {proc_state.color_map.get(cls)}")
+                plotter.color_map = proc_state.color_map.copy()
             
-            # Always add "No Detections" to the color map
-            color_map["No Detections"] = 'black'
+            # Generate the plot
+            fig = plotter.plot(
+                agg_df=agg_df,
+                all_locations_df=all_locations_df,
+                title="Spatial Distribution of Predictions by Class"
+            )
             
-            # Update the processor state with the color map for future consistency
+            # Update state with new color map for consistency
             new_state = ProcessorState(
                 processor=proc_state.processor,
                 prediction_dir=proc_state.prediction_dir,
                 metadata_dir=proc_state.metadata_dir,
-                color_map=color_map,
+                color_map=plotter.color_map,
                 class_thresholds=validated_thresholds_df
             )
             
-            # Get sorted classes for category order, with "No Detections" first
-            sorted_classes = sorted(agg_df[class_col].unique())
-            if "No Detections" in sorted_classes:
-                sorted_classes.remove("No Detections")
-                sorted_classes = ["No Detections"] + sorted_classes
-            
-            # Create the scatter mapbox plot
-            fig = px.scatter_mapbox(
-                agg_df,
-                lat='latitude',
-                lon='longitude',
-                size='count',
-                color=class_col,
-                category_orders={class_col: sorted_classes},
-                color_discrete_map=color_map,
-                hover_data=['site_name', 'count'],
-                size_max=50,
-                zoom=10,
-                height=600,
-                title="Spatial Distribution of Predictions by Class"
-            )
-            
-            # Adjust marker sizes - special case for "No Detections"
-            for i, trace in enumerate(fig.data):
-                if trace.name == "No Detections":
-                    # Set fixed small size for "No Detections" markers
-                    fig.data[i].marker.size = 8
-                    fig.data[i].marker.sizemode = "diameter"
-                    fig.data[i].marker.sizeref = 1
-                    fig.data[i].marker.sizemin = 8
-                else:
-                    # Scale other markers by detection count
-                    max_count = max(agg_df['count']) if len(agg_df[agg_df['count'] > 0]) > 0 else 1
-                    size_scale = 50
-                    sizeref = 2.0 * max_count / (size_scale**2)
-                    fig.data[i].marker.sizeref = sizeref
-                    fig.data[i].marker.sizemin = 5
-                    fig.data[i].marker.sizemode = 'area'
-                
-                # Set opacity for all markers
-                fig.data[i].marker.opacity = 0.8
-            
-            fig.update_layout(
-                mapbox_style='open-street-map',
-                margin={"r":0,"t":30,"l":0,"b":0},
-                legend_title="Class",
-                showlegend=True,
-                mapbox=dict(center=dict(lat=agg_df['latitude'].mean(), lon=agg_df['longitude'].mean()), zoom=10),
-                modebar=dict(
-                    orientation='h',  # Horizontal orientation
-                    bgcolor='rgba(255, 255, 255, 0.8)',
-                    color='#333333',
-                    activecolor='#FF4B4B'
-                ),
-                modebar_add=[
-                    'zoom', 'zoomIn', 'zoomOut', 'resetViews'
-                ],
-                margin_pad=10,  # Add some padding
-                margin_t=50     # Add top margin for modebar
-            )
-            
-            # Update hover template based on whether it's a "No Detections" point
-            for i, trace in enumerate(fig.data):
-                if trace.name == "No Detections":
-                    fig.data[i].hovertemplate = (
-                        "Site: %{customdata[0]}<br>"
-                        "Status: No Detections<br>"
-                        "Latitude: %{lat:.2f}<br>"
-                        "Longitude: %{lon:.2f}<br>"
-                        "<extra></extra>"
-                    )
-                else:
-                    fig.data[i].hovertemplate = (
-                        "Site: %{customdata[0]}<br>"
-                        "Count: %{customdata[1]}<br>"
-                        "Latitude: %{lat:.2f}<br>"
-                        "Longitude: %{lon:.2f}<br>"
-                        "<extra></extra>"
-                    )
-            
             return [new_state, gr.update(value=fig, visible=True)]
         except Exception as e:
+            print(f"Error creating map: {str(e)}")
+            import traceback
+            traceback.print_exc()  # Print the full traceback for debugging
             raise gr.Error(f"Error creating map: {str(e)}")
 
     def plot_time_distribution(
