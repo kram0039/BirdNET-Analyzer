@@ -9,39 +9,39 @@ methods for filtering that data.
 import os
 import datetime
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import warnings
 import numpy as np
 import pandas as pd
-import gradio as gr  # Add this import
+import gradio as gr
 
 from birdnet_analyzer.evaluation.preprocessing.utils import (
     extract_recording_filename,
     extract_recording_filename_from_filename,
     read_and_concatenate_files_in_directory,
 )
+from birdnet_analyzer.visualization.common import convert_timestamp_to_datetime
 
 
 class DataProcessor:
     """
     Processor for handling and transforming prediction data.
 
-    This class loads prediction files (either a single file or all files in
-    a specified directory), prepares them into a unified DataFrame, and
-    provides methods to filter the prediction data by recording, class,
-    or confidence.
+    This class loads prediction files, merges optional metadata, creates derived
+    columns (datetime parts, coordinates), and provides a method to filter
+    the complete dataset based on various criteria.
     """
 
     # Default column mappings for predictions
     DEFAULT_COLUMNS_PREDICTIONS = {
         "Start Time": "Start Time",
-        "End Time": "End Time",  # Keep this for backwards compatibility
+        "End Time": "End Time",
         "Class": "Class",
         "Recording": "Recording",
         "Duration": "Duration",
         "Confidence": "Confidence",
-        "Correctness": "Correctness",  # Add Correctness field with default column name
+        "Correctness": "Correctness",
     }
 
     def __init__(
@@ -58,714 +58,552 @@ class DataProcessor:
             prediction_file_name (Optional[str]): Name of a single prediction file to process.
                 If None, all `.csv` or `.tsv` files in the directory will be loaded.
             columns_predictions (Optional[Dict[str, str]], optional): Custom column mappings for
-                prediction files (e.g., {"Start Time": "begin", "End Time": "end"}). If None,
-                default mappings are used.
+                prediction files. If None, default mappings are used.
         """
-        # Paths and filenames
         self.prediction_directory_path: str = prediction_directory_path
         self.prediction_file_name: Optional[str] = prediction_file_name
-
-        # Use provided column mappings or defaults
         self.columns_predictions: Dict[str, str] = (
             columns_predictions if columns_predictions is not None
             else self.DEFAULT_COLUMNS_PREDICTIONS.copy()
         )
 
-        # Internal DataFrame to hold all predictions
-        self.predictions_df: pd.DataFrame = pd.DataFrame()
+        # Internal DataFrames
+        self.raw_predictions_df: pd.DataFrame = pd.DataFrame()  # Raw loaded data
+        self.metadata_df: Optional[pd.DataFrame] = None  # Processed metadata
+        self.complete_df: pd.DataFrame = pd.DataFrame()  # Fully processed, unfiltered data
 
-        # Metadata DataFrame
-        self.metadata_df: Optional[pd.DataFrame] = None
-
-        # Validate column mappings
         self._validate_columns()
-
-        # Load and prepare data
         self.load_data()
-        self.predictions_df = self._prepare_dataframe(self.predictions_df)
-        # Create the initial merged dataset as a copy of predictions
-        self.merged_df = self.predictions_df.copy()
+        self._process_data()  # Initial processing without metadata
 
-        # Ensure that the confidence column is numeric.
-        conf_col = self.get_column_name("Confidence")
-        if conf_col in self.predictions_df.columns:
-            self.predictions_df[conf_col] = self.predictions_df[conf_col].astype(float)
-
-        # Gather unique classes (if "Class" column exists)
+        # Gather unique classes after initial processing
         class_col = self.get_column_name("Class")
-        if class_col in self.predictions_df.columns:
+        if class_col in self.complete_df.columns:
             self.classes = tuple(
-                sorted(self.predictions_df[class_col].dropna().unique())
+                sorted(self.complete_df[class_col].dropna().unique())
             )
         else:
             self.classes = tuple()
 
     def _validate_columns(self) -> None:
-        """
-        Validates that essential columns are provided in the prediction column mappings.
-
-        Raises:
-            ValueError: If required columns are missing or have None values.
-        """
-        # Required columns for predictions - removed "End Time" from required list
-        required_columns = ["Start Time", "Class"]
-
+        """Validates essential prediction column mappings."""
+        required_columns = ["Start Time", "Class", "Confidence", "Recording"]  # Recording is needed for filename extraction
         missing_pred_columns = [
             col
             for col in required_columns
             if col not in self.columns_predictions or self.columns_predictions[col] is None
         ]
         if missing_pred_columns:
-            raise ValueError(f"Missing or None prediction columns: {', '.join(missing_pred_columns)}")
+            if "Recording" in missing_pred_columns and self.columns_predictions.get("Recording") is None:
+                pass  # Allow missing Recording if source_file will be used
+            else:
+                raise ValueError(f"Missing or None prediction columns: {', '.join(missing_pred_columns)}")
 
     def load_data(self) -> None:
-        """
-        Loads the prediction data into a DataFrame.
-
-        - If `prediction_file_name` is None, all CSV/TSV files in `prediction_directory_path`
-          are concatenated.
-        - Otherwise, only the specified file is read.
-        """
+        """Loads the raw prediction data into self.raw_predictions_df."""
         if self.prediction_file_name is None:
-            # Load all files in the directory
-            self.predictions_df = read_and_concatenate_files_in_directory(
+            self.raw_predictions_df = read_and_concatenate_files_in_directory(
                 self.prediction_directory_path
             )
         else:
-            # Load a single specified file
             full_path = os.path.join(self.prediction_directory_path, self.prediction_file_name)
-            # Attempt TSV read first; if it fails, try CSV
             try:
-                self.predictions_df = pd.read_csv(full_path, sep="\t")
-            except pd.errors.ParserError:
-                self.predictions_df = pd.read_csv(full_path)
-
-        # Ensure 'source_file' column exists for traceability
-        if "source_file" not in self.predictions_df.columns:
-            # If a single file was loaded, each row is from that file
-            default_source = self.prediction_file_name if self.prediction_file_name else ""
-            self.predictions_df["source_file"] = default_source
-
-    def _extract_datetime_from_filename(self, filename: str) -> Tuple[str, datetime.datetime, str]:
-        """
-        Extracts site name and datetime from filename using flexible regex patterns.
-        
-        Returns: (site_name, datetime_obj, original_filename)
-        """
-        if not isinstance(filename, str):
-            return ("", None, str(filename))
-        
-        # Extract parts for later site_id matching
-        self._extract_site_id_from_filename(filename)
-        
-        # Define patterns for date and time formats
-        datetime_patterns = [
-            # YYYYMMDD_HHMMSS (original format)
-            (r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})', 
-             '%Y%m%d_%H%M%S'),
-            
-            # YYYY-MM-DD_HH-MM-SS
-            (r'(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})', 
-             '%Y-%m-%d_%H-%M-%S'),
-            
-            # YYYYMMDDHHMMSS (continuous)
-            (r'(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})', 
-             '%Y%m%d%H%M%S'),
-            
-            # YYYY-MM-DD-HH-MM-SS
-            (r'(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})', 
-             '%Y-%m-%d-%H-%M-%S'),
-            
-            # YYYY.MM.DD_HH.MM.SS
-            (r'(\d{4})\.(\d{2})\.(\d{2})_(\d{2})\.(\d{2})\.(\d{2})', 
-             '%Y.%m.%d_%H.%M.%S'),
-            
-            # MM-DD-YYYY_HH-MM-SS
-            (r'(\d{2})-(\d{2})-(\d{4})_(\d{2})-(\d{2})-(\d{2})', 
-             '%m-%d-%Y_%H-%M-%S'),
-            
-            # DD-MM-YYYY_HH-MM-SS
-            (r'(\d{2})-(\d{2})-(\d{4})_(\d{2})-(\d{2})-(\d{2})', 
-             '%d-%m-%Y_%H-%M-%S'),
-            
-            # YYYY_MM_DD_HH_MM_SS
-            (r'(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})',
-             '%Y_%m_%d_%H_%M_%S'),
-        ]
-        
-        # Try each pattern
-        for pattern, format_str in datetime_patterns:
-            # Extract the datetime parts from anywhere in the filename
-            datetime_match = re.search(pattern, filename)
-            if datetime_match:
+                self.raw_predictions_df = pd.read_csv(full_path, sep="\t", on_bad_lines='warn')
+                if len(self.raw_predictions_df.columns) <= 1 and '\t' not in open(full_path).readline():
+                    print("Reading as TSV resulted in few columns, trying CSV.")
+                    self.raw_predictions_df = pd.read_csv(full_path, on_bad_lines='warn')
+            except Exception as e_tsv:
+                print(f"Failed to read as TSV ({e_tsv}), trying CSV.")
                 try:
-                    # Reconstruct the datetime string based on matched groups
-                    parts = datetime_match.groups()
-                    if len(parts) == 6:  # Year, month, day, hour, minute, second
-                        if format_str == '%m-%d-%Y_%H-%M-%S':
-                            datetime_str = f"{parts[0]}-{parts[1]}-{parts[2]}_{parts[3]}-{parts[4]}-{parts[5]}"
-                        elif format_str == '%d-%m-%Y_%H-%M-%S':
-                            datetime_str = f"{parts[0]}-{parts[1]}-{parts[2]}_{parts[3]}-{parts[4]}-{parts[5]}"
-                        else:
-                            datetime_str = f"{parts[0]}{parts[1]}{parts[2]}_{parts[3]}{parts[4]}{parts[5]}"
-                        
-                        # Create datetime object
-                        date_time = datetime.datetime.strptime(datetime_str, format_str)
-                        return (None, date_time, filename)
+                    self.raw_predictions_df = pd.read_csv(full_path, on_bad_lines='warn')
+                except Exception as e_csv:
+                    raise ValueError(f"Failed to read prediction file '{full_path}' as both TSV and CSV: {e_csv}")
+
+        if "source_file" not in self.raw_predictions_df.columns:
+            default_source = self.prediction_file_name if self.prediction_file_name else "unknown_source"
+            self.raw_predictions_df["source_file"] = default_source
+
+        rename_map = {v: k for k, v in self.columns_predictions.items() if v in self.raw_predictions_df.columns and k != v}
+        standard_rename_map = {}
+        for standard_name, user_name in self.columns_predictions.items():
+            if user_name not in self.raw_predictions_df.columns and standard_name in self.raw_predictions_df.columns:
+                pass
+            elif user_name in self.raw_predictions_df.columns:
+                standard_rename_map[user_name] = standard_name
+
+        self.raw_predictions_df.rename(columns=standard_rename_map, inplace=True)
+
+    def _extract_datetime_from_filename(self, filename: str) -> Optional[datetime.datetime]:
+        """Extracts datetime from filename using flexible regex patterns."""
+        if not isinstance(filename, str):
+            return None
+
+        datetime_patterns = [
+            (r'(\d{4})(\d{2})(\d{2})[_]?(\d{2})(\d{2})(\d{2})', '%Y%m%d_%H%M%S'),
+            (r'(\d{4})-(\d{2})-(\d{2})[_|-](\d{2})-(\d{2})-(\d{2})', '%Y-%m-%d_%H-%M-%S'),
+            (r'(\d{4})\.(\d{2})\.(\d{2})[_](\d{2})\.(\d{2})\.(\d{2})', '%Y.%m.%d_%H.%M.%S'),
+            (r'(\d{2})-(\d{2})-(\d{4})[_](\d{2})-(\d{2})-(\d{2})', '%m-%d-%Y_%H-%M-%S'),
+            (r'(\d{2})-(\d{2})-(\d{4})[_](\d{2})-(\d{2})-(\d{2})', '%d-%m-%Y_%H-%M-%S'),
+            (r'(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})', '%Y_%m_%d_%H_%M_%S'),
+        ]
+
+        for pattern, format_str in datetime_patterns:
+            match = re.search(pattern, filename)
+            if match:
+                try:
+                    dt_str_parts = match.groups()
+                    if format_str == '%Y%m%d_%H%M%S':
+                        dt_str = f"{dt_str_parts[0]}{dt_str_parts[1]}{dt_str_parts[2]}_{dt_str_parts[3]}{dt_str_parts[4]}{dt_str_parts[5]}"
+                    elif format_str == '%Y-%m-%d_%H-%M-%S':
+                        dt_str = f"{dt_str_parts[0]}-{dt_str_parts[1]}-{dt_str_parts[2]}_{dt_str_parts[3]}-{dt_str_parts[4]}-{dt_str_parts[5]}"
+                    elif format_str == '%Y.%m.%d_%H.%M.%S':
+                        dt_str = f"{dt_str_parts[0]}.{dt_str_parts[1]}.{dt_str_parts[2]}_{dt_str_parts[3]}.{dt_str_parts[4]}.{dt_str_parts[5]}"
+                    elif format_str == '%m-%d-%Y_%H-%M-%S':
+                        dt_str = f"{dt_str_parts[0]}-{dt_str_parts[1]}-{dt_str_parts[2]}_{dt_str_parts[3]}-{dt_str_parts[4]}-{dt_str_parts[5]}"
+                    elif format_str == '%d-%m-%Y_%H-%M-%S':
+                        dt_str = f"{dt_str_parts[0]}-{dt_str_parts[1]}-{dt_str_parts[2]}_{dt_str_parts[3]}-{dt_str_parts[4]}-{dt_str_parts[5]}"
+                    elif format_str == '%Y_%m_%d_%H_%M_%S':
+                        dt_str = f"{dt_str_parts[0]}_{dt_str_parts[1]}_{dt_str_parts[2]}_{dt_str_parts[3]}_{dt_str_parts[4]}_{dt_str_parts[5]}"
+                    else:
+                        continue
+
+                    parse_format = format_str
+                    if pattern == r'(\d{4})(\d{2})(\d{2})[_]?(\d{2})(\d{2})(\d{2})' and '_' not in dt_str:
+                        parse_format = '%Y%m%d%H%M%S'
+                    elif pattern == r'(\d{4})-(\d{2})-(\d{2})[_|-](\d{2})-(\d{2})-(\d{2})' and '-' in match.group(0) and '_' not in match.group(0):
+                        parse_format = '%Y-%m-%d-%H-%M-%S'
+
+                    return datetime.datetime.strptime(dt_str, parse_format)
                 except ValueError:
-                    continue  # Try the next pattern if this one doesn't work
-        
-        # If no pattern matched, return with no datetime
-        return (None, None, filename)
+                    continue
+        return None
 
-    def _extract_site_id_from_filename(self, filename: str) -> None:
-        """
-        Store filename parts for later site_id matching.
-        
-        Splits the filename by underscores and stores parts for later matching.
-        """
+    def _extract_site_id_from_filename(self, filename: str, valid_site_ids: Optional[set] = None) -> Optional[str]:
+        """Extracts site ID by checking filename parts against valid IDs."""
         if not isinstance(filename, str) or not filename:
-            return
-        
-        # Remove file extension if present
+            return None
+
         basename = os.path.splitext(filename)[0]
-        
-        # Simply split by underscore and store all parts
         parts = basename.split('_')
-        
-        # Store parts with this filename for later matching in _update_site_ids
-        if not hasattr(self, '_filename_parts_map'):
-            self._filename_parts_map = {}
-        self._filename_parts_map[filename] = parts
 
-    def _add_metadata_info(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Adds metadata information (latitude, longitude) to the DataFrame."""
-        if self.metadata_df is None or df.empty:
-            return df
+        extracted_site_id = None
+        if valid_site_ids:
+            for part in parts:
+                if part in valid_site_ids:
+                    extracted_site_id = part
+                    break
 
-        # Create a copy
-        df = df.copy()
-        
-        # Site IDs are now set by _update_site_ids() when metadata is loaded
-        # Just merge lat/lon based on existing site_name column
-        
-        # Get valid sites
-        valid_sites = set(self.metadata_df['site_name'].unique())
-        
-        # For rows with valid site names, add lat/lon data
-        site_mask = df['site_name'].isin(valid_sites)
-        
-        if site_mask.any():
-            # Only merge records with valid site names
-            valid_records = df[site_mask].copy()
-            valid_records = pd.merge(
-                valid_records,
-                self.metadata_df[['site_name', 'latitude', 'longitude']],
-                on='site_name',
-                how='left'
-            )
-            
-            # Update the original dataframe with the merged values
-            df.loc[site_mask, 'latitude'] = valid_records['latitude'].values
-            df.loc[site_mask, 'longitude'] = valid_records['longitude'].values
-        
-        return df
+        return extracted_site_id
 
-    def _prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Enhanced preparation of DataFrame including datetime processing."""
+    def _process_data(self) -> None:
+        """
+        Processes raw prediction data to create the complete, unfiltered DataFrame.
+        Merges metadata if available. Creates derived columns.
+        """
+        if self.raw_predictions_df.empty:
+            self.complete_df = pd.DataFrame()
+            return
+
+        df = self.raw_predictions_df.copy()
+
+        start_time_col = self.get_column_name("Start Time")
+        class_col = self.get_column_name("Class")
+        conf_col = self.get_column_name("Confidence")
         recording_col = self.get_column_name("Recording")
-        
+        correctness_col = self.get_column_name("Correctness")
+
+        if start_time_col not in df.columns:
+            df[start_time_col] = 0.0
+        if class_col not in df.columns:
+            df[class_col] = "Unknown"
+        if conf_col not in df.columns:
+            df[conf_col] = 0.0
+        if correctness_col not in df.columns:
+            df[correctness_col] = None
+
+        df[start_time_col] = pd.to_numeric(df[start_time_col], errors='coerce').fillna(0.0)
+        df[conf_col] = pd.to_numeric(df[conf_col], errors='coerce').fillna(0.0)
+
         try:
-            # Extract and clean recording filenames
-            if recording_col in df.columns:
-                # Store the full filename with extension
+            if recording_col in df.columns and df[recording_col].notna().any():
                 df["recording_filename_with_ext"] = df[recording_col].apply(
-                    lambda x: os.path.basename(str(x))
-                    if pd.notnull(x) else ""
+                    lambda x: os.path.basename(str(x)) if pd.notnull(x) else ""
                 )
-                # Also store without extension for backward compatibility
-                df["recording_filename"] = df[recording_col].apply(
-                    lambda x: os.path.splitext(os.path.basename(str(x)))[0]
-                    if pd.notnull(x) else ""
+            elif "source_file" in df.columns:
+                df["recording_filename_with_ext"] = df["source_file"].apply(
+                    lambda x: os.path.basename(str(x)) if pd.notnull(x) else ""
                 )
             else:
-                # Store the full filename with extension
-                df["recording_filename_with_ext"] = df["source_file"].apply(
-                    lambda x: os.path.basename(str(x))
-                    if pd.notnull(x) else ""
-                )
-                # Also store without extension for backward compatibility
-                df["recording_filename"] = df["source_file"].apply(
-                    lambda x: os.path.splitext(os.path.basename(str(x)))[0]
-                    if pd.notnull(x) else ""
-                )
-            
-            # Additional cleanup
-            df["recording_filename"] = df["recording_filename"].str.strip()
-            df["recording_filename"] = df["recording_filename"].replace('', pd.NA)
-            df["recording_filename_with_ext"] = df["recording_filename_with_ext"].str.strip()
-            df["recording_filename_with_ext"] = df["recording_filename_with_ext"].replace('', pd.NA)
-            
+                df["recording_filename_with_ext"] = "unknown_recording"
+
+            df["recording_filename"] = df["recording_filename_with_ext"].apply(
+                lambda x: os.path.splitext(x)[0] if pd.notnull(x) else ""
+            )
+            df["recording_filename"] = df["recording_filename"].str.strip().replace('', pd.NA)
+            df["recording_filename_with_ext"] = df["recording_filename_with_ext"].str.strip().replace('', pd.NA)
+
         except Exception as e:
-            print(f"Warning: Error processing filenames: {e}")
+            print(f"Warning: Error processing recording filenames: {e}")
             df["recording_filename"] = pd.NA
             df["recording_filename_with_ext"] = pd.NA
 
-        # Extract datetime information
-        datetime_info = df['recording_filename'].apply(self._extract_datetime_from_filename)
-        df['site_name'] = datetime_info.apply(lambda x: x[0])
-        df['recording_datetime'] = datetime_info.apply(lambda x: x[1])
-        
-        # Calculate actual prediction times
-        start_time_col = self.get_column_name("Start Time")
-        if start_time_col in df.columns and 'recording_datetime' in df.columns:
-            df['prediction_time'] = df.apply(
-                lambda row: row['recording_datetime'] + 
-                          datetime.timedelta(seconds=float(row[start_time_col]))
-                if pd.notnull(row['recording_datetime']) else None,
-                axis=1
-            )
-            
-            # Extract additional time components
-            # Extract date components
-            df['year'] = df['prediction_time'].dt.year.astype('Int64')  # Use Int64 for integer type with NA support
-            df['month'] = df['prediction_time'].dt.month
-            df['month_name'] = df['prediction_time'].dt.strftime('%B')  # Full month name
-            df['day'] = df['prediction_time'].dt.day
-            df['weekday'] = df['prediction_time'].dt.weekday  # Monday=0, Sunday=6
-            df['weekday_name'] = df['prediction_time'].dt.strftime('%A')  # Full weekday name
-            
-            # Extract time components
-            df['hour'] = df['prediction_time'].dt.hour
-            df['minute'] = df['prediction_time'].dt.minute
-            df['second'] = df['prediction_time'].dt.second
-            
-            # Add time period indicators
-            df['is_weekend'] = df['weekday'].isin([5, 6])  # Saturday=5, Sunday=6
-            df['day_period'] = pd.cut(df['hour'], 
-                                    bins=[-1, 5, 11, 16, 21, 24],
-                                    labels=['Night', 'Morning', 'Midday', 'Afternoon', 'Evening'])
-        
-        # Process correctness column - normalize values to True, False, or None
-        correctness_col = self.get_column_name("Correctness")
+        df['recording_datetime'] = df['recording_filename_with_ext'].apply(self._extract_datetime_from_filename)
+
+        df['prediction_time'] = pd.NaT
+        valid_dt_mask = df['recording_datetime'].notna()
+        df.loc[valid_dt_mask, 'prediction_time'] = df.loc[valid_dt_mask].apply(
+            lambda row: row['recording_datetime'] + pd.to_timedelta(row[start_time_col], unit='s'),
+            axis=1
+        )
+        df['prediction_time'] = pd.to_datetime(df['prediction_time'], errors='coerce')
+
+        dt_series = df['prediction_time'].dt
+        df['prediction_date'] = dt_series.normalize()
+        df['prediction_year'] = dt_series.year.astype('Int64')
+        df['prediction_month'] = dt_series.month.astype('Int64')
+        df['prediction_day'] = dt_series.day.astype('Int64')
+        df['prediction_hour'] = dt_series.hour.astype('Int64')
+        df['prediction_minute'] = dt_series.minute.astype('Int64')
+        df['prediction_second'] = dt_series.second.astype('Int64')
+        df['prediction_dayofyear'] = dt_series.dayofyear.astype('Int64')
+        df['prediction_weekofyear'] = dt_series.isocalendar().week.astype('Int64')
+        df['prediction_weekday'] = dt_series.weekday.astype('Int64')
+        df['prediction_time_of_day'] = dt_series.time
+
         if correctness_col in df.columns:
-            # Convert to lowercase strings first (handling NaN/None values)
-            df[correctness_col] = df[correctness_col].astype(str).str.lower()
-            
-            # Map values to True, False, or None
-            df[correctness_col] = df[correctness_col].apply(
-                lambda x: True if x in ['true', 'correct'] 
-                      else False if x in ['false', 'incorrect'] 
-                      else None if x in ['nan', 'none', ''] or pd.isna(x) 
-                      else None
+            df[correctness_col] = df[correctness_col].astype(str).str.lower().str.strip()
+            correctness_map = {
+                'true': True, 'correct': True, '1': True, '1.0': True,
+                'false': False, 'incorrect': False, '0': False, '0.0': False,
+            }
+            df['Correctness'] = df[correctness_col].apply(
+                lambda x: correctness_map.get(x, None) if isinstance(x, str) else (x if isinstance(x, bool) else None)
             )
         else:
-            # Create correctness column with all None values if it doesn't exist
-            df[correctness_col] = None
+            df['Correctness'] = None
+        df['Correctness'] = df['Correctness'].astype('boolean')
 
-        # Add metadata information
-        df = self._add_metadata_info(df)
-        
-        return df
+        # --- Site ID Extraction and Metadata Merging ---
+        valid_site_ids = set(self.metadata_df['site_name'].dropna().astype(str).unique()) if self.metadata_df is not None else None
+
+        # Apply site ID extraction
+        df['site_name'] = df['recording_filename'].apply(lambda x: self._extract_site_id_from_filename(x, valid_site_ids))
+
+        if self.metadata_df is not None:
+            meta_to_merge = self.metadata_df[['site_name', 'latitude', 'longitude']].drop_duplicates(subset=['site_name']).set_index('site_name')
+
+            # Perform the merge using map
+            df['latitude'] = df['site_name'].map(meta_to_merge['latitude'])
+            df['longitude'] = df['site_name'].map(meta_to_merge['longitude'])
+
+            unmatched_sites = df['site_name'].notna() & df['latitude'].isna()  # Check where site_name exists but coords are NaN after merge
+            if unmatched_sites.any():
+                num_unmatched = unmatched_sites.sum()
+                sample_unmatched_names = df.loc[unmatched_sites, 'site_name'].unique()[:5]
+                print(f"Warning: {num_unmatched} records have site names ('{', '.join(sample_unmatched_names)}', ...) that were extracted from filenames but not found in the metadata (or metadata lacks coords).")
+        else:
+            df['latitude'] = pd.NA
+            df['longitude'] = pd.NA
+
+        # Convert coordinates to numeric, coercing errors
+        df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
+        df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
+
+        # --- Renaming Logic ---
+        final_rename_map = {
+            'prediction_date': 'Date',
+            'prediction_time_of_day': 'Time',
+            'prediction_year': 'Year',
+            'prediction_month': 'Month',
+            'prediction_day': 'Day',
+            'prediction_hour': 'Hour',
+            'site_name': 'Site',
+            'latitude': 'Latitude',
+            'longitude': 'Longitude',
+            'Start Time': 'Start Time',
+            'Class': 'Class',
+            'Confidence': 'Confidence',
+            'Correctness': 'Correctness',
+            'recording_filename': 'Recording',
+        }
+
+        final_rename_map_filtered = {}
+        current_columns = set(df.columns)
+        for source_col, target_col in final_rename_map.items():
+            if source_col in current_columns:
+                if target_col not in current_columns or source_col == target_col:
+                    final_rename_map_filtered[source_col] = target_col
+
+        df.rename(columns=final_rename_map_filtered, inplace=True)
+
+        # --- Column Selection Logic ---
+        final_columns = [
+            'Recording', 'Date', 'Time', 'Year', 'Month', 'Day', 'Hour',
+            'Start Time', 'Confidence', 'Class', 'Correctness',
+            'Site', 'Latitude', 'Longitude',
+            'prediction_time',
+            'prediction_minute', 'prediction_second', 'prediction_dayofyear',
+            'prediction_weekofyear', 'prediction_weekday',
+            'recording_filename_with_ext', 'source_file'
+        ]
+        if 'Recording' not in df.columns and 'recording_filename' in df.columns:
+            if 'recording_filename' not in final_columns:
+                final_columns.insert(1, 'recording_filename')
+
+        existing_final_columns = [col for col in final_columns if col in df.columns]
+        other_cols = [col for col in df.columns if col not in existing_final_columns]
+
+        self.complete_df = df[existing_final_columns + other_cols].copy()
+
+        duplicates = self.complete_df.columns[self.complete_df.columns.duplicated()]
+        if not duplicates.empty:
+            print(f"Warning: Duplicate columns found after processing: {duplicates.tolist()}")
 
     def _clean_coordinate(self, value):
-        """
-        Clean coordinate values by handling different formats:
-        - Replace comma decimal separators with periods
-        - Remove degree symbols and other non-numeric characters
-        - Handle N/A values
-        
-        Args:
-            value: The coordinate value to clean
-            
-        Returns:
-            Cleaned numeric value or None if invalid
-        """
-        if pd.isna(value) or value == 'N/A' or value == 'NA' or value == '':
+        """Cleans coordinate values (string or numeric) to float or None."""
+        if pd.isna(value):
             return None
-            
         if isinstance(value, (int, float)):
-            return value
-            
-        # Convert to string if not already
-        value_str = str(value).strip()
-        
-        # Handle N/A variants
-        if value_str.upper() in ('N/A', 'NA', 'NONE', 'NULL'):
-            return None
-            
-        # Remove degree symbols and other non-numeric characters except for decimal separators
-        # Keep minus sign for negative coordinates
-        cleaned = ''
-        for char in value_str:
-            if char.isdigit() or char == '-':
-                cleaned += char
-            elif char == ',':  # Convert comma to period for decimal separator
-                cleaned += '.'
-            elif char == '.':  # Keep periods
-                cleaned += '.'
-                
-        # Try to convert to float
+            return float(value)
         try:
-            return float(cleaned)
-        except ValueError:
-            print(f"Warning: Could not convert coordinate value: '{value_str}' -> '{cleaned}'")
+            cleaned_val = str(value).strip().replace(',', '.')
+            cleaned_val = re.sub(r'[^\d.-]+', '', cleaned_val)
+            if cleaned_val.count('.') > 1:
+                parts = cleaned_val.split('.')
+                cleaned_val = parts[0] + '.' + parts[1]
+            if '-' in cleaned_val[1:]:
+                cleaned_val = cleaned_val.replace('-', '')
+                if str(value).strip().startswith('-'):
+                    cleaned_val = '-' + cleaned_val
+
+            return float(cleaned_val)
+        except (ValueError, TypeError):
             return None
 
-    def set_metadata(self, metadata_df: pd.DataFrame, 
+    def set_metadata(self, metadata_df: pd.DataFrame,
                      site_col: str = 'Site',
                      lat_col: str = 'Latitude',
                      lon_col: str = 'Longitude') -> None:
         """
-        Sets the metadata DataFrame with standardized column names and merges it with predictions_df.
+        Sets and processes the metadata DataFrame, then re-processes the main data.
         """
-        # Ensure required columns exist
-        for col in [site_col, lat_col, lon_col]:
-            if col not in metadata_df.columns:
-                raise ValueError(f"Missing column '{col}' in metadata.")
+        if metadata_df is None or metadata_df.empty:
+            self.metadata_df = None
+            print("Metadata is empty, clearing existing metadata.")
+            self._process_data()
+            return
 
-        # Check for duplicate site IDs in metadata BEFORE any processing
-        metadata_df = metadata_df.copy()
-        
-        # EARLY CHECK FOR DUPLICATE SITES WITH DIFFERENT COORDINATES
-        # Standardize column names for the check
-        metadata_df['site_name'] = metadata_df[site_col]
-        metadata_df['latitude'] = pd.to_numeric(metadata_df[lat_col], errors='coerce')
-        metadata_df['longitude'] = pd.to_numeric(metadata_df[lon_col], errors='coerce')
-        
-        # Round coordinates for stable comparison
-        metadata_df['latitude_rounded'] = metadata_df['latitude'].round(6)
-        metadata_df['longitude_rounded'] = metadata_df['longitude'].round(6)
-        
-        # Find duplicate site names
-        duplicated_sites = metadata_df['site_name'].duplicated(keep=False)
-        if duplicated_sites.any():
-            # Get list of sites with duplicates
-            dup_sites_df = metadata_df[duplicated_sites].copy()
-            
-            # Check if each duplicate site has consistent coordinates
-            inconsistent_sites = []
-            for site, group in dup_sites_df.groupby('site_name'):
-                # Check if any coordinate is different after conversion
-                lat_values = group['latitude_rounded'].dropna().unique()
-                lon_values = group['longitude_rounded'].dropna().unique()
-                
-                # If we have more than one unique value for lat or lon, it's inconsistent
-                if len(lat_values) > 1 or len(lon_values) > 1:
-                    # Find the different coordinates for this site
-                    coords = group[['latitude', 'longitude']].drop_duplicates()
-                    coord_strs = [f"({row['latitude']}, {row['longitude']})" for _, row in coords.iterrows()]
-                    inconsistent_sites.append((site, coord_strs))
-            
-            # If any sites have inconsistent coordinates, raise a specific Gradio error
-            if inconsistent_sites:
-                error_msg = "Found duplicate site IDs with different coordinates in metadata file.\n\n"
-                for site, coords in inconsistent_sites:
-                    error_msg += f"- Site ID '{site}' maps to multiple locations: {', '.join(coords)}\n"
-                error_msg += "\nPlease correct your metadata file to ensure each site ID has a unique location."
-                
-                print(f"ERROR: {error_msg}")
-                gr.Error(error_msg)
-                return
-        
-        # Debug: Print metadata site column info
-        print(f"\nDEBUG - Metadata DataFrame shape: {metadata_df.shape}")
-        print(f"DEBUG - Total unique site values in metadata: {metadata_df['site_name'].nunique()}")
-        
-        # Now proceed with normal metadata processing with the duplicate check already done
-        self.metadata_df = metadata_df.copy()
-        
-        # Standardize column names (again to be sure)
-        mapping = {site_col: 'site_name', lat_col: 'latitude', lon_col: 'longitude'}
-        self.metadata_df.rename(columns=mapping, inplace=True)
-        
-        # Clean coordinates
-        self.metadata_df['latitude'] = self.metadata_df['latitude'].apply(self._clean_coordinate)
-        self.metadata_df['longitude'] = self.metadata_df['longitude'].apply(self._clean_coordinate)
-        
-        # Drop duplicate sites (keeping only the first occurrence since we know they're consistent)
-        if metadata_df['site_name'].duplicated().any():
-            duplicate_count = self.metadata_df[self.metadata_df['site_name'].duplicated(keep=False)]['site_name'].nunique()
-            self.metadata_df = self.metadata_df.drop_duplicates(subset=['site_name'], keep='first')
-            gr.Info(f"Found {duplicate_count} sites with identical coordinates for duplicate entries. Using first occurrence.")
-        
-        # Identify and report rows with invalid coordinates
-        invalid_lat = ~(self.metadata_df['latitude'].between(-90, 90) | self.metadata_df['latitude'].isna())
-        invalid_lon = ~(self.metadata_df['longitude'].between(-180, 180) | self.metadata_df['longitude'].isna())
-        
+        required_meta_cols = {site_col, lat_col, lon_col}
+        missing_meta_cols = required_meta_cols - set(metadata_df.columns)
+        if missing_meta_cols:
+            raise ValueError(f"Missing required columns in metadata: {', '.join(missing_meta_cols)}")
+
+        meta = metadata_df.copy()
+
+        meta.rename(columns={site_col: 'site_name', lat_col: 'latitude', lon_col: 'longitude'}, inplace=True)
+
+        meta['latitude'] = meta['latitude'].apply(self._clean_coordinate)
+        meta['longitude'] = meta['longitude'].apply(self._clean_coordinate)
+
+        invalid_lat = ~meta['latitude'].between(-90, 90, inclusive='both') & meta['latitude'].notna()
+        invalid_lon = ~meta['longitude'].between(-180, 180, inclusive='both') & meta['longitude'].notna()
         if invalid_lat.any() or invalid_lon.any():
-            # Get sample of problematic values for better error reporting
-            problem_rows = self.metadata_df[invalid_lat | invalid_lon].head(5)
-            sample_issues = problem_rows[['site_name', 'latitude', 'longitude']].to_string(index=False)
-            error_msg = f"Invalid coordinates found. Latitude must be between -90 and 90, Longitude between -180 and 180.\n"
-            error_msg += f"Sample problematic rows:\n{sample_issues}"
+            invalid_rows = meta[invalid_lat | invalid_lon]
+            error_msg = (f"Invalid coordinates found in metadata. Latitude must be [-90, 90], Longitude [-180, 180]. "
+                         f"Problematic rows:\n{invalid_rows[['site_name', 'latitude', 'longitude']].head().to_string(index=False)}")
             gr.Error(error_msg)
-            return
-        
-        # Handle rows with valid site names but missing coordinates
-        missing_coords_count = self.metadata_df[self.metadata_df['latitude'].isna() | self.metadata_df['longitude'].isna()].shape[0]
-        if missing_coords_count > 0:
-            print(f"Warning: {missing_coords_count} sites have missing coordinates - these sites will be excluded from spatial analysis")
-        
-        # Remove rows with missing coordinates entirely to prevent later issues
-        self.metadata_df = self.metadata_df.dropna(subset=['latitude', 'longitude'])
-            
-        # Debug: Before final merge, show what we're working with
-        print(f"DEBUG - Final metadata shape after cleaning: {self.metadata_df.shape}")
-        print(f"DEBUG - Predictions DataFrame shape: {self.predictions_df.shape}")
-        print(f"DEBUG - Predictions site_name column exists: {'site_name' in self.predictions_df.columns}")
-        
-        # Merge metadata into predictions
-        merged = self.predictions_df.copy()
-        
-        # Debug the site_name values before mapping
-        sample_site_names = []
-        if not merged.empty:
-            sample_site_names = merged["site_name"].sample(min(5, len(merged))).tolist()
-        print(f"DEBUG - Sample site_name values before mapping: {sample_site_names}")
-        
-        # Check if we have any site_name matches between predictions and metadata
-        if 'site_name' in merged.columns:
-            # Create a set of all site names in metadata for fast lookup
-            metadata_sites = set(self.metadata_df['site_name'].dropna().astype(str))
-            
-            # Count how many matches we have
-            matching_sites_count = merged['site_name'].isin(metadata_sites).sum()
-            print(f"DEBUG - Found {matching_sites_count} prediction records with matching site IDs")
-            
-            if matching_sites_count == 0:
-                gr.Warning(
-                    "No prediction records have site IDs that match the metadata file. "
-                    "Please check that the recording filenames contain site IDs exactly matching those in the metadata."
-                )
-        
-        # Now do the actual mapping
-        merged["latitude"] = merged["site_name"].map(self.metadata_df.set_index("site_name")["latitude"])
-        merged["longitude"] = merged["site_name"].map(self.metadata_df.set_index("site_name")["longitude"])
-        
-        # Debug after mapping
-        print(f"DEBUG - Latitude column after mapping - null count: {merged['latitude'].isnull().sum()} out of {len(merged)}")
-        print(f"DEBUG - Any non-null latitude values: {not merged['latitude'].isnull().all()}")
-        
-        if merged["latitude"].isnull().all():
-            error_msg = ("All latitude values are missing after merging metadata. "
-                        "This typically occurs when no site IDs in predictions match site IDs in metadata.")
-            print(f"ERROR - {error_msg}")
+            print(f"ERROR: {error_msg}")
+            meta = meta[~(invalid_lat | invalid_lon)]
+            gr.Warning(f"Removed {len(invalid_rows)} rows with invalid coordinates from metadata.")
+
+        meta['lat_round'] = meta['latitude'].round(6)
+        meta['lon_round'] = meta['longitude'].round(6)
+        duplicates = meta[meta.duplicated(subset=['site_name'], keep=False)].copy()
+
+        inconsistent_sites = []
+        if not duplicates.empty:
+            for site, group in duplicates.groupby('site_name'):
+                if group[['lat_round', 'lon_round']].drop_duplicates().shape[0] > 1:
+                    coords = group[['latitude', 'longitude']].drop_duplicates()
+                    coord_strs = [f"({row['latitude']:.4f}, {row['longitude']:.4f})" for _, row in coords.iterrows()]
+                    inconsistent_sites.append((site, coord_strs))
+
+        if inconsistent_sites:
+            error_msg = "Found duplicate site IDs with different coordinates in metadata:\n"
+            for site, coords in inconsistent_sites:
+                error_msg += f"- Site '{site}' maps to: {', '.join(coords)}\n"
+            error_msg += "Please correct the metadata file."
             gr.Error(error_msg)
+            print(f"ERROR: {error_msg}")
             return
-        
-        self.merged_df = merged.copy()
 
-    def _update_site_ids(self) -> None:
+        if meta.duplicated(subset=['site_name'], keep=False).any():
+            num_dupes = meta.duplicated(subset=['site_name'], keep=False).sum()
+            meta = meta.drop_duplicates(subset=['site_name'], keep='first')
+            print(f"Removed {num_dupes} duplicate metadata entries for sites with identical coordinates.")
+
+        missing_coords = meta['latitude'].isna() | meta['longitude'].isna()
+        if missing_coords.any():
+            num_missing = missing_coords.sum()
+            sample_missing = meta.loc[missing_coords, 'site_name'].unique()[:5]
+            print(f"Warning: {num_missing} sites in metadata have missing/invalid coordinates (e.g., '{', '.join(sample_missing)}') and will be excluded from spatial analysis.")
+            meta = meta.dropna(subset=['latitude', 'longitude'])
+
+        self.metadata_df = meta[['site_name', 'latitude', 'longitude']].copy()
+        print(f"Successfully processed metadata for {len(self.metadata_df)} unique sites with valid coordinates.")
+
+        self._process_data()
+
+    def get_column_name(self, field_name: str) -> str:
         """
-        Updates site ID matches in the predictions DataFrame using available metadata.
-        Called after metadata is set to match site IDs correctly.
-        Only considers exact matches between filename parts and site IDs.
-        """
-        if self.metadata_df is None or self.predictions_df.empty:
-            print("DEBUG - Cannot update site IDs: metadata is None or predictions are empty")
-            return
-        
-        # Get valid site IDs from metadata
-        valid_site_ids = set(self.metadata_df['site_name'].dropna().astype(str).unique())
-        print(f"DEBUG - Valid metadata site IDs: {sorted(list(valid_site_ids))}")
-        
-        # Check filename examples
-        sample_filenames = self.predictions_df['recording_filename'].dropna().head(5).tolist()
-        print(f"DEBUG - Sample filenames for site ID extraction: {sample_filenames}")
-        
-        # Iterate through each filename to find possible matches
-        site_id_mapping = {}
-        unmatched_filenames = set()
-        
-        for filename in self.predictions_df['recording_filename'].dropna().unique():
-            # Extract potential parts from the filename
-            parts = str(filename).split('_')
-            print(f"DEBUG - Parts from '{filename}': {parts}")
-            
-            found_match = False
-            # ONLY try exact matches - no case-insensitive or substring matching
-            for part in parts:
-                if part in valid_site_ids:
-                    site_id_mapping[filename] = part
-                    found_match = True
-                    print(f"DEBUG - Found exact match for '{filename}': {part}")
-                    break
-            
-            if not found_match:
-                unmatched_filenames.add(filename)
-                print(f"DEBUG - No matching site ID found for '{filename}'")
-        
-        # Apply the site ID mapping to all rows
-        self.predictions_df['site_name'] = self.predictions_df['recording_filename'].map(site_id_mapping)
-        
-        # Debug: Show results
-        match_count = self.predictions_df['site_name'].notna().sum()
-        print(f"DEBUG - Records with matched site IDs: {match_count}/{len(self.predictions_df)} ({match_count/len(self.predictions_df)*100:.1f}%)")
-        
-        # Update merged DataFrame with new site names
-        self.merged_df = self.predictions_df.copy()
-        
-        # Map coordinates from metadata to predictions
-        self.merged_df["latitude"] = self.merged_df["site_name"].map(
-            self.metadata_df.set_index("site_name")["latitude"])
-        self.merged_df["longitude"] = self.merged_df["site_name"].map(
-            self.metadata_df.set_index("site_name")["longitude"])
-        
-        # Check if we have any valid coordinates
-        has_lat = not self.merged_df["latitude"].isnull().all()
-        print(f"DEBUG - Has any valid latitude values: {has_lat}")
-        print(f"DEBUG - Null latitude count: {self.merged_df['latitude'].isnull().sum()} out of {len(self.merged_df)}")
-        
-        # Show warning for unmatched files
-        if unmatched_filenames:
-            sample_unmatched = sorted(list(unmatched_filenames))[:10]  # Show first 10 examples
-            display_unmatched = ", ".join([f"'{f}'" for f in sample_unmatched])
-            if len(unmatched_filenames) > 10:
-                display_unmatched += f" and {len(unmatched_filenames) - 10} more"
-            
-            valid_examples = ", ".join([f"'{s}'" for s in sorted(list(valid_site_ids))[:5]])
-            warning_message = (
-                f"No site ID match found for {len(unmatched_filenames)} recordings: {display_unmatched}\n"
-                f"Valid site IDs in metadata include: {valid_examples}\n"
-                f"Make sure each recording filename contains a site ID exactly matching one from the metadata."
-            )
-            gr.Warning(warning_message)
-
-    def get_column_name(self, field_name: str, prediction: bool = True) -> str:
-        """
-        Retrieves the appropriate column name for the specified field.
-
-        Args:
-            field_name (str): The name of the field (e.g., "Class", "Start Time").
-            prediction (bool): Whether to fetch from predictions mapping (True)
-                             or annotations mapping (False). 
-                             In visualization, this parameter is ignored since we only 
-                             have prediction data.
-
-        Returns:
-            str: The column name corresponding to the field.
-
-        Raises:
-            TypeError: If field_name is None.
+        Retrieves the actual column name in the DataFrame for a standard field.
+        Falls back to the field_name itself if no mapping exists or column not present.
         """
         if field_name is None:
             raise TypeError("field_name cannot be None.")
 
-        if field_name in self.columns_predictions and self.columns_predictions[field_name] is not None:
-            return self.columns_predictions[field_name]
+        mapped_name = self.columns_predictions.get(field_name)
+
+        if mapped_name:
+            if mapped_name in self.raw_predictions_df.columns:
+                return mapped_name
+            elif mapped_name in self.complete_df.columns:
+                return mapped_name
+
+        if field_name in self.complete_df.columns:
+            return field_name
+        if field_name in self.raw_predictions_df.columns:
+            return field_name
 
         return field_name
 
-    def get_data(self) -> pd.DataFrame:
-        """
-        Retrieves a copy of the merged prediction DataFrame.
-        """
-        # Return the complete merged dataset if available.
-        if hasattr(self, "merged_df") and not self.merged_df.empty:
-            return self.merged_df.copy()
-        return self.predictions_df.copy()
+    def get_complete_data(self) -> pd.DataFrame:
+        """Retrieves a copy of the complete, processed, unfiltered DataFrame."""
+        return self.complete_df.copy()
 
-    def filter_data(
+    def get_filtered_data(
         self,
-        selected_recordings: Optional[List[str]] = None,
         selected_classes: Optional[List[str]] = None,
+        selected_recordings: Optional[List[str]] = None,
+        selected_sites: Optional[List[str]] = None,
+        date_range_start: Optional[Any] = None,
+        date_range_end: Optional[Any] = None,
+        time_start: Optional[datetime.time] = None,
+        time_end: Optional[datetime.time] = None,
+        correctness_mode: str = "All",
+        class_thresholds: Optional[pd.DataFrame] = None,
         min_confidence: Optional[float] = None,
     ) -> pd.DataFrame:
         """
-        Returns a filtered version of the prediction DataFrame.
+        Filters the complete dataset based on the provided criteria.
 
         Args:
-            selected_recordings (List[str], optional): A list of recording filenames to include.
-                If None, no filtering by recording is applied.
-            selected_classes (List[str], optional): A list of classes to include.
-                If None, no filtering by class is applied.
-            min_confidence (float, optional): Minimum confidence threshold for inclusion.
-                If None, no filtering by confidence is applied.
+            selected_classes: List of classes to include.
+            selected_recordings: List of recording filenames (without extension) to include.
+            selected_sites: List of site names to include.
+            date_range_start: Start date for filtering (inclusive).
+            date_range_end: End date for filtering (inclusive).
+            time_start: Start time of day for filtering (inclusive).
+            time_end: End time of day for filtering (inclusive).
+            correctness_mode: Filter by correctness flag ("All", "Correct", "Incorrect", "Unspecified").
+            class_thresholds: DataFrame with class-specific confidence thresholds.
+            min_confidence: A global minimum confidence threshold (use class_thresholds preferably).
 
         Returns:
-            pd.DataFrame: The filtered DataFrame.
+            A filtered pandas DataFrame.
         """
-        df = self.get_data()  # Work on a copy of the data
-        
-        # Debug: Print recording filename samples
-        print(f"\nDEBUG - Original DataFrame shape: {df.shape}")
-        if "recording_filename" in df.columns:
-            sample_recordings = df["recording_filename"].sample(min(5, len(df))).tolist()
-            print(f"DEBUG - Sample recording_filename values: {sample_recordings}")
-        if "recording_filename_with_ext" in df.columns:
-            sample_recordings_ext = df["recording_filename_with_ext"].sample(min(5, len(df))).tolist()
-            print(f"DEBUG - Sample recording_filename_with_ext values: {sample_recordings_ext}")
-        if "site_name" in df.columns:
-            site_counts = df["site_name"].value_counts().head(5).to_dict()
-            print(f"DEBUG - Top 5 site_name values and counts: {site_counts}")
+        if self.complete_df.empty:
+            return pd.DataFrame()
 
-        # Filter by recordings - handle both with and without extensions
+        df = self.complete_df.copy()
+
         if selected_recordings:
-            # Process each selection to handle paths and extensions flexibly
-            clean_with_ext = []
-            clean_without_ext = []
-            
-            for recording in selected_recordings:
-                if not recording or not recording.strip():
-                    continue
-                    
-                # Get just the basename (filename without path)
-                basename = os.path.basename(recording.strip())
-                
-                # Store both with and without extension versions
-                clean_with_ext.append(basename)
-                clean_without_ext.append(os.path.splitext(basename)[0])
-            
-            # Debug: Show what we're filtering with
-            if clean_with_ext:
-                print(f"DEBUG - First few clean_with_ext: {clean_with_ext[:3]}")
-            if clean_without_ext:
-                print(f"DEBUG - First few clean_without_ext: {clean_without_ext[:3]}")
-                
-            # Match on either the full filename with extension or just the basename
-            df = df[df["recording_filename_with_ext"].isin(clean_with_ext) | 
-                    df["recording_filename"].isin(clean_without_ext)]
-            
-            # Debug: Result after filtering
-            print(f"DEBUG - Filtered DataFrame shape: {df.shape}")
+            norm_selected_recordings = {rec.lower().strip() for rec in selected_recordings if rec}
+            if 'Recording' in df.columns:
+                df['Recording_lower'] = df['Recording'].astype(str).str.lower().str.strip()
+                df = df[df['Recording_lower'].isin(norm_selected_recordings)]
+                df = df.drop(columns=['Recording_lower'])
+            else:
+                print("Warning: 'Recording' column not found for filtering.")
 
-        # Filter by classes
-        class_col = self.get_column_name("Class")
-        if selected_classes is not None and class_col in df.columns:
-            df = df[df[class_col].isin(selected_classes)]
+        if selected_sites:
+            if 'Site' in df.columns:
+                norm_selected_sites = {site.strip() for site in selected_sites if site}
+                df = df[df['Site'].isin(norm_selected_sites)]
+            else:
+                print("Warning: 'Site' column not found for filtering.")
 
-        # Filter by confidence
-        confidence_col = self.get_column_name("Confidence")
-        if min_confidence is not None and confidence_col in df.columns:
-            df = df[df[confidence_col] >= min_confidence]
+        if selected_classes:
+            if 'Class' in df.columns:
+                df = df[df['Class'].isin(selected_classes)]
+            else:
+                print("Warning: 'Class' column not found for filtering.")
+
+        if date_range_start is not None or date_range_end is not None:
+            if 'Date' in df.columns and pd.api.types.is_datetime64_any_dtype(df['Date']):
+                start_date = convert_timestamp_to_datetime(date_range_start)
+                end_date = convert_timestamp_to_datetime(date_range_end)
+
+                start_date = pd.Timestamp(start_date.date()) if start_date else None
+                end_date = pd.Timestamp(end_date.date()) if end_date else None
+
+                if start_date and end_date:
+                    df = df[df['Date'].between(start_date, end_date, inclusive='both')]
+                elif start_date:
+                    df = df[df['Date'] >= start_date]
+                elif end_date:
+                    df = df[df['Date'] <= end_date]
+            else:
+                print("Warning: 'Date' column not found or not datetime type for filtering.")
+
+        if time_start is not None or time_end is not None:
+            if 'Time' in df.columns:
+                is_time_object = df['Time'].apply(lambda x: isinstance(x, datetime.time)).all()
+                if is_time_object:
+                    if time_start and time_end:
+                        if time_start <= time_end:
+                            df = df[df['Time'].between(time_start, time_end, inclusive='both')]
+                        else:
+                            df = df[(df['Time'] >= time_start) | (df['Time'] <= time_end)]
+                    elif time_start:
+                        df = df[df['Time'] >= time_start]
+                    elif time_end:
+                        df = df[df['Time'] <= time_end]
+                else:
+                    print("Warning: 'Time' column does not contain time objects for filtering.")
+            else:
+                print("Warning: 'Time' column not found for filtering.")
+
+        if correctness_mode != "All":
+            if 'Correctness' in df.columns and pd.api.types.is_bool_dtype(df['Correctness'].dtype):
+                if correctness_mode == "Correct":
+                    df = df[df['Correctness'] == True]
+                elif correctness_mode == "Incorrect":
+                    df = df[df['Correctness'] == False]
+                elif correctness_mode == "Unspecified":
+                    df = df[df['Correctness'].isna()]
+            else:
+                print(f"Warning: 'Correctness' column not found or not boolean type for filtering by '{correctness_mode}'.")
+
+        if class_thresholds is not None and not class_thresholds.empty:
+            if 'Class' in df.columns and 'Confidence' in df.columns:
+                if 'Class' in class_thresholds.columns and 'Threshold' in class_thresholds.columns:
+                    thresholds_map = class_thresholds.set_index('Class')['Threshold']
+                    thresholds_map = pd.to_numeric(thresholds_map, errors='coerce').fillna(0.0)
+
+                    df['class_threshold'] = df['Class'].map(thresholds_map)
+                    df['class_threshold'] = df['class_threshold'].fillna(0.01).clip(lower=0.01)
+
+                    df = df[df['Confidence'] >= df['class_threshold']]
+                    df = df.drop(columns=['class_threshold'])
+                else:
+                    print("Warning: Class thresholds DataFrame missing 'Class' or 'Threshold' column.")
+            else:
+                print("Warning: 'Class' or 'Confidence' column missing for applying class thresholds.")
+        elif min_confidence is not None:
+            if 'Confidence' in df.columns:
+                df = df[df['Confidence'] >= min_confidence]
+            else:
+                print("Warning: 'Confidence' column not found for applying global minimum confidence.")
 
         return df
-
-    def get_aggregated_locations(self, selected_classes: Optional[List[str]] = None) -> pd.DataFrame:
-        """Returns aggregated prediction counts by location and class."""
-        df = self.get_data()
-        
-        # Apply metadata and remove invalid records.
-        df = self._add_metadata_info(df)
-        if df.empty:
-            raise ValueError("No valid predictions with matching site IDs found")
-        
-        # Ensure metadata columns exist.
-        for col in ['latitude', 'longitude']:
-            if col not in df.columns:
-                raise ValueError(f"Metadata column '{col}' is missing. Please set metadata with valid latitude and longitude fields.")
-        
-        class_col = self.get_column_name("Class")
-        if selected_classes:
-            df = df[df[class_col].isin(selected_classes)]
-            
-        # Group by location and class, count occurrences
-        agg_df = df.groupby([
-            'site_name',
-            'latitude',
-            'longitude',
-            class_col
-        ]).size().reset_index(name='count')
-        
-        return agg_df

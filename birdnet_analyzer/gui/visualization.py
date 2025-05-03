@@ -6,6 +6,7 @@ import typing
 import io
 from pathlib import Path
 import datetime
+import traceback
 
 import gradio as gr
 import pandas as pd
@@ -21,27 +22,26 @@ from birdnet_analyzer.visualization.plotting.temporal_scatter import TemporalSca
 from birdnet_analyzer.visualization.plotting.spatial_distribution import SpatialDistributionPlotter
 from birdnet_analyzer.visualization.detection_counts import calculate_detection_counts
 
-# Import from common module instead of defining here
-from birdnet_analyzer.visualization.common import ProcessorState, apply_class_thresholds, apply_datetime_filters
+from birdnet_analyzer.visualization.common import ProcessorState, convert_timestamp_to_datetime
 
 def get_date_range(df: pd.DataFrame) -> tuple:
-    """Get the earliest and latest dates from predictions."""
+    """Get the earliest and latest dates from the 'Date' column."""
     try:
-        if 'prediction_time' not in df.columns or df.empty:
+        if 'Date' not in df.columns or df.empty or not pd.api.types.is_datetime64_any_dtype(df['Date']):
             return None, None
-        
-        min_date = df['prediction_time'].min()
-        max_date = df['prediction_time'].max()
-        
+
+        min_date = df['Date'].min()
+        max_date = df['Date'].max()
+
         if pd.isna(min_date) or pd.isna(max_date):
             return None, None
-            
-        # Set time to start and end of day
-        start_date = min_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_date = max_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        
+
+        start_date = min_date.to_pydatetime()
+        end_date = max_date.to_pydatetime()
+
         return start_date, end_date
-    except Exception:
+    except Exception as e:
+        print(f"Error getting date range: {e}")
         return None, None
 
 def build_visualization_tab():
@@ -51,7 +51,6 @@ def build_visualization_tab():
     have been removed.
     """
 
-    # Default columns for predictions (kept for user convenience)
     prediction_default_columns = {
         "Start Time": "File Offset (s)",
         "Class": "Common Name",
@@ -60,7 +59,6 @@ def build_visualization_tab():
         "Correctness": "correctness",
     }
 
-    # Default columns for metadata
     metadata_default_columns = {
         "Site": "Site",
         "X": "lat",
@@ -79,9 +77,6 @@ def build_visualization_tab():
     }
 
     def get_columns_from_uploaded_files(files):
-        """
-        Reads the header row of each file to discover available columns.
-        """
         columns = set()
         if files:
             for file_obj in files:
@@ -94,9 +89,6 @@ def build_visualization_tab():
         return sorted(list(columns))
 
     def save_uploaded_files(files):
-        """
-        Saves uploaded files into a temporary directory and returns its path.
-        """
         if not files:
             return None
         temp_dir = tempfile.mkdtemp()
@@ -111,23 +103,19 @@ def build_visualization_tab():
         pred_class,
         pred_confidence,
         pred_recording,
-        pred_correctness=None,  # Add correctness parameter with default
+        pred_correctness=None,
         prediction_dir=None,
     ):
-        """Creates a simplified DataProcessor for predictions only."""
         if not prediction_files:
             return [], [], None, None
 
         try:
-            # Initialize processor
             if prediction_dir is None:
                 prediction_dir = save_uploaded_files(prediction_files)
 
-            # Debug just number of files
             print(f"\nProcessing {len(prediction_files)} prediction files")
             print(f"Using prediction directory: {prediction_dir}")
 
-            # Set up column mappings with proper fallbacks
             cols_pred = {}
             for key, default in prediction_default_columns.items():
                 if key == "Start Time":
@@ -148,38 +136,57 @@ def build_visualization_tab():
                 prediction_file_name=None,
                 columns_predictions=cols_pred,
             )
-            
-            # Get data and extract unique values
-            df = proc.get_data()
-            
-            # Debug dataframe shape and columns
+
+            df = proc.get_complete_data()
+
             print(f"\nLoaded DataFrame shape: {df.shape}")
             print(f"DataFrame columns: {df.columns}")
-            
-            avail_classes = list(proc.classes) 
-            print(f"\nFound {len(avail_classes)} unique classes")
-            
-            # Get and clean up recording names consistently (strip and lowercase)
-            recordings = df["recording_filename"].dropna().unique()
-            avail_recordings = []
-            for rec in recordings:
-                if isinstance(rec, str):
-                    clean_name = os.path.splitext(os.path.basename(rec.strip()))[0].lower()
-                    if clean_name and clean_name not in avail_recordings:
-                        avail_recordings.append(clean_name)
-            avail_recordings.sort()
-            print(f"Found {len(avail_recordings)} unique recordings")
 
-            return avail_classes, avail_recordings, proc, prediction_dir
+            # Check for duplicate 'Recording' column before accessing
+            if isinstance(df.columns, pd.MultiIndex):
+                raise gr.Error("DataFrame has a MultiIndex, which is not supported.")
+            if 'Recording' not in df.columns:
+                raise gr.Error("The processed DataFrame is missing the 'Recording' column.")
 
-        except Exception as e:
-            print(f"Error in initialize_processor: {e}")
+            # Explicitly handle potential duplicate columns when selecting for .unique()
+            recording_col_data = df['Recording']
+            if isinstance(recording_col_data, pd.DataFrame):
+                print("Warning: Duplicate 'Recording' columns found. Using the first instance.")
+                # Select the first column named 'Recording' if duplicates exist
+                recording_col_data = df.loc[:, 'Recording'].iloc[:, 0]
+
+            # Now apply dropna and unique to the Series
+            recordings = recording_col_data.dropna().astype(str).unique()
+            recordings = sorted([rec for rec in recordings if rec])  # Ensure strings and remove empty
+
+            # Similarly for 'Class'
+            if 'Class' not in df.columns:
+                raise gr.Error("The processed DataFrame is missing the 'Class' column.")
+
+            class_col_data = df['Class']
+            if isinstance(class_col_data, pd.DataFrame):
+                print("Warning: Duplicate 'Class' columns found. Using the first instance.")
+                class_col_data = df.loc[:, 'Class'].iloc[:, 0]
+
+            classes = class_col_data.dropna().astype(str).unique()
+            classes = sorted([cls for cls in classes if cls])  # Ensure strings and remove empty
+
+            print(f"Found {len(classes)} unique classes")
+
+            print(f"Found {len(recordings)} unique recordings")
+
+            return classes, recordings, proc, prediction_dir
+
+        except ValueError as e:
+            print(f"Error in initialize_processor: {str(e)}")
+            traceback.print_exc()  # Print full traceback for debugging
             raise gr.Error(f"Error initializing processor: {str(e)}")
+        except Exception as e:
+            print(f"Unexpected error in initialize_processor: {str(e)}")
+            traceback.print_exc()  # Print full traceback for debugging
+            raise gr.Error(f"An unexpected error occurred: {str(e)}")
 
     def update_prediction_columns(uploaded_files):
-        """
-        Called when user selects prediction files. Reads headers and updates dropdowns.
-        """
         cols = get_columns_from_uploaded_files(uploaded_files)
         cols = [""] + cols
         updates = []
@@ -190,42 +197,33 @@ def build_visualization_tab():
         return updates
 
     def update_metadata_columns(uploaded_files):
-        """
-        Called when user selects metadata files. Reads headers and updates dropdowns.
-        Explicitly handles semicolon-delimited CSV files.
-        """
         cols = set()
         if uploaded_files:
             for file_obj in uploaded_files:
-                file_path = str(file_obj)  # Ensure it's a string path
+                file_path = str(file_obj)
                 print(f"Attempting to read metadata from: {file_path}")
 
                 try:
-                    # Special handling for excel files
                     if file_path.lower().endswith('.xlsx'):
                         try:
                             df = pd.read_excel(file_path, sheet_name=0, nrows=0)
                             print(f"Successfully read Excel headers: {list(df.columns)}")
                             cols.update(df.columns)
-                            continue  # Success, move to next file
+                            continue
                         except Exception as e:
                             print(f"Error reading Excel file: {e}")
-                            # Continue trying other methods...
 
-                    # Try with semicolon first - most important for European CSV
                     try:
-                        # Explicitly try semicolon with latin1 encoding (common for European files)
                         df = pd.read_csv(file_path, sep=';', encoding='latin1', nrows=1)
                         if len(df.columns) > 1:
                             print(f"Successfully read with semicolon delimiter: {list(df.columns)}")
                             cols.update(df.columns)
-                            continue  # Success, move to next file
+                            continue
                         else:
                             print("Only got one column with semicolon delimiter, trying other options")
                     except Exception as e:
                         print(f"Failed with semicolon delimiter: {e}")
 
-                    # If semicolon didn't work, try comma with different encodings
                     encodings = ['utf-8', 'latin1', 'ISO-8859-1', 'cp1252']
                     for encoding in encodings:
                         try:
@@ -233,28 +231,24 @@ def build_visualization_tab():
                             if len(df.columns) > 1:
                                 print(f"Successfully read with comma delimiter and {encoding} encoding: {list(df.columns)}")
                                 cols.update(df.columns)
-                                break  # Success with this encoding
+                                break
                         except Exception as e:
                             print(f"Failed with comma and {encoding}: {e}")
-                    
-                    # If we got columns, continue to next file
+
                     if df is not None and len(df.columns) > 1:
                         continue
 
-                    # Last resort: try Python engine with auto-detection
                     try:
                         df = pd.read_csv(file_path, sep=None, engine='python', nrows=1)
                         print(f"Successfully read with Python auto-detection: {list(df.columns)}")
                         cols.update(df.columns)
                     except Exception as e:
                         print(f"Python auto-detection failed: {e}")
-                        
-                        # Absolute last resort: try to manually read and split the header line
+
                         try:
                             with open(file_path, 'r', encoding='latin1') as f:
                                 header_line = f.readline().strip()
-                            
-                            # Try splitting by semicolon and comma
+
                             if ';' in header_line:
                                 headers = header_line.split(';')
                                 print(f"Manual semicolon split found {len(headers)} headers")
@@ -270,7 +264,6 @@ def build_visualization_tab():
                     print(f"Error reading headers from {file_path}: {e}")
                     gr.Warning(f"{loc.localize('eval-tab-warning-error-reading-file')} {file_path}")
 
-        # Prepare dropdown options
         cols = [""] + sorted(list(cols))
         print(f"Final columns found: {cols}")
         updates = []
@@ -294,14 +287,9 @@ def build_visualization_tab():
         current_classes,
         current_recordings,
     ):
-        """
-        Called to create or update the processor based on current file uploads and column selections.
-        Preserves any selected classes/recordings that remain valid.
-        Initializes the class threshold DataFrame and makes the update button visible.
-        """
         prediction_dir = save_uploaded_files(prediction_files)
         metadata_dir = save_uploaded_files(metadata_files)
-        
+
         avail_classes, avail_recordings, proc, prediction_dir = initialize_processor(
             prediction_files,
             pred_start_time,
@@ -311,44 +299,39 @@ def build_visualization_tab():
             pred_correctness,
             prediction_dir,
         )
-        
-        # Initialize class thresholds DataFrame
+
         class_thresholds_init_df = None
-        threshold_df_update = gr.update(visible=False, value=None) # Default to hidden
-        threshold_json_btn_update = gr.update(visible=False) # Update for JSON select button
-        threshold_download_btn_update = gr.update(visible=False) # Update for download button
-        
+        threshold_df_update = gr.update(visible=False, value=None)
+        threshold_json_btn_update = gr.update(visible=False)
+        threshold_download_btn_update = gr.update(visible=False)
+
         if proc:
-            # Create DataFrame for thresholds
             class_thresholds_init_df = pd.DataFrame({
                 'Class': sorted(avail_classes),
-                'Threshold': [0.10] * len(avail_classes) # Default threshold
+                'Threshold': [0.10] * len(avail_classes)
             })
             threshold_df_update = gr.update(visible=True, value=class_thresholds_init_df)
-            threshold_json_btn_update = gr.update(visible=True) # Make JSON select button visible
-            threshold_download_btn_update = gr.update(visible=True) # Make download button visible
+            threshold_json_btn_update = gr.update(visible=True)
+            threshold_download_btn_update = gr.update(visible=True)
 
             state = ProcessorState(
-                processor=proc, 
-                prediction_dir=prediction_dir, 
+                processor=proc,
+                prediction_dir=prediction_dir,
                 metadata_dir=metadata_dir,
-                class_thresholds=class_thresholds_init_df # Store initial thresholds in state
+                class_thresholds=class_thresholds_init_df
             )
         else:
-            state = None # No processor created
+            state = None
 
-        # Keep current selections if they exist in available options
         new_classes = []
         new_recordings = []
 
         if current_classes:
             new_classes = [c for c in current_classes if c in avail_classes]
         if current_recordings:
-            normalized_current = [os.path.splitext(os.path.basename(r.strip()))[0].lower() 
-                               for r in current_recordings if isinstance(r, str)]
+            normalized_current = [str(r).strip() for r in current_recordings if isinstance(r, str)]
             new_recordings = [r for r in normalized_current if r in avail_recordings]
 
-        # Default to all available if no valid selections remain
         if not new_classes:
             new_classes = avail_classes
         if not new_recordings:
@@ -358,132 +341,99 @@ def build_visualization_tab():
             gr.update(choices=avail_classes, value=new_classes),
             gr.update(choices=avail_recordings, value=new_recordings),
             state,
-            threshold_df_update, # Return update for the DataFrame UI
-            threshold_json_btn_update, # Return update for JSON select button
-            threshold_download_btn_update # Return update for download button
+            threshold_df_update,
+            threshold_json_btn_update,
+            threshold_download_btn_update
         )
 
     def update_datetime_defaults(processor_state):
-        """Update the default date range based on available predictions."""
         if not processor_state or not processor_state.processor:
-            return [gr.update()] * 6  # Updated for 6 outputs (2 dates + 4 time dropdowns)
-        
-        df = processor_state.processor.get_data()
+            return [gr.update()] * 6
+
+        df = processor_state.processor.get_complete_data()
         start_date, end_date = get_date_range(df)
-        
+
         return [
             gr.update(value=start_date),
             gr.update(value=end_date),
-            gr.update(value="00"),  # Start hour
-            gr.update(value="00"),  # Start minute
-            gr.update(value="23"),  # End hour
-            gr.update(value="59"),  # End minute
+            gr.update(value="00"),
+            gr.update(value="00"),
+            gr.update(value="23"),
+            gr.update(value="59"),
         ]
 
-    def combine_time_components(hour, minute):
-        """Combine hour and minute components into a time string."""
-        return f"{hour}:{minute}"
+    def combine_time_components(hour, minute) -> typing.Optional[datetime.time]:
+        if hour is None or minute is None:
+            return None
+        try:
+            return datetime.time(int(hour), int(minute))
+        except ValueError:
+            return None
 
     def plot_predictions_action(
         proc_state: ProcessorState,
         selected_classes_list,
         selected_recordings_list,
+        selected_sites_list,
         date_range_start,
         date_range_end,
         time_start_hour,
         time_start_minute,
         time_end_hour,
         time_end_minute,
-        correctness_mode="Ignore correctness flags"  # Add correctness_mode parameter with default
+        correctness_mode="Ignore correctness flags"
     ):
-        """Uses ConfidencePlotter to plot confidence distributions for the selected classes."""
         if not proc_state or not proc_state.processor:
             raise gr.Error(loc.localize("eval-tab-error-calc-metrics-first"))
 
-        df = proc_state.processor.get_data()
-        if df.empty:
-            raise gr.Error("No predictions to show.")
+        processor = proc_state.processor
+        thresholds_df = proc_state.class_thresholds
 
-        # Apply class and recording filters first
-        col_class = proc_state.processor.get_column_name("Class")
-        conf_col = proc_state.processor.get_column_name("Confidence")
-        corr_col = proc_state.processor.get_column_name("Correctness")
-        
-        # Check if correctness column exists; if not, try both capitalization forms
-        if corr_col not in df.columns:
-            # Try both 'correctness' and 'Correctness'
-            alt_corr_col = 'correctness' if corr_col == 'Correctness' else 'Correctness'
-            if alt_corr_col in df.columns:
-                print(f"Switching to alternative correctness column: '{alt_corr_col}'")
-                corr_col = alt_corr_col
-            else:
-                # Create an empty correctness column if none exists
-                print(f"No correctness column found, creating a placeholder")
-                df[corr_col] = None
-        
-        if selected_classes_list:
-            df = df[df[col_class].isin(selected_classes_list)]
-        if selected_recordings_list:
-            selected_recordings_list = [rec.lower() for rec in selected_recordings_list]
-            df["recording_filename"] = df["recording_filename"].apply(lambda x: os.path.splitext(os.path.basename(x.strip()))[0].lower() if isinstance(x, str) else x)
-            df = df[df["recording_filename"].isin(selected_recordings_list)]
+        time_start = combine_time_components(time_start_hour, time_start_minute)
+        time_end = combine_time_components(time_end_hour, time_end_minute)
 
-        # Apply date and time filters
-        df = apply_datetime_filters(
-            df, 
-            date_range_start, 
-            date_range_end, 
-            time_start_hour, 
-            time_start_minute, 
-            time_end_hour, 
-            time_end_minute
-        )
-        
-        if df.empty:
-            raise gr.Error("No predictions match the selected date/time filters.")
-            
-        # Normalize correctness values
-        df[corr_col] = df[corr_col].map({
-            'true': True, 'True': True, True: True, 1: True,
-            'false': False, 'False': False, False: False, 0: False,
-            'nan': None, 'none': None, '': None, 'null': None, 'NA': None
-        }, na_action='ignore')
-        
-        # Apply correctness filter based on selected mode
-        if correctness_mode == "Show only correct":
-            df = df[df[corr_col] == True]
-        elif correctness_mode == "Show only incorrect":
-            df = df[df[corr_col] == False]
-        elif correctness_mode == "Show only unspecified":
-            df = df[df[corr_col].isna()]
-        
-        if df.empty:
-            raise gr.Error(f"No predictions match the selected {correctness_mode.lower()} filter.")
+        try:
+            filtered_df = processor.get_filtered_data(
+                selected_classes=selected_classes_list,
+                selected_recordings=selected_recordings_list,
+                selected_sites=selected_sites_list,
+                date_range_start=date_range_start,
+                date_range_end=date_range_end,
+                time_start=time_start,
+                time_end=time_end,
+                correctness_mode=correctness_mode,
+                class_thresholds=thresholds_df,
+            )
+        except Exception as e:
+            print(f"Error during filtering: {e}")
+            traceback.print_exc()
+            raise gr.Error(f"Error filtering data: {str(e)}")
 
-        # Create histogram plot (using Plotly) with fixed 10 bins (handled in the method)
+        if filtered_df.empty:
+            raise gr.Error("No predictions match the selected filters.")
+
+        col_class = "Class"
+        conf_col = "Confidence"
+
         plotter = ConfidencePlotter(
-            data=df,
+            data=filtered_df,
             class_col=col_class,
             conf_col=conf_col
         )
 
         try:
             fig_hist = plotter.plot_histogram_plotly(title="Histogram of Confidence Scores by Class")
-            new_state = ProcessorState(
-                processor=proc_state.processor,
-                prediction_dir=proc_state.prediction_dir,
-                metadata_dir=proc_state.metadata_dir,
-                color_map=proc_state.color_map,
-                class_thresholds=proc_state.class_thresholds
-            )
-            return [new_state, gr.update(visible=True, value=fig_hist)]
+            return [proc_state, gr.update(visible=True, value=fig_hist)]
         except Exception as e:
-            raise gr.Error(f"Error creating plots: {str(e)}")
+            print(f"Error creating confidence plot: {e}")
+            traceback.print_exc()
+            raise gr.Error(f"Error creating confidence plot: {str(e)}")
 
     def plot_temporal_scatter(
         proc_state: ProcessorState,
         selected_classes_list,
         selected_recordings_list,
+        selected_sites_list,
         date_range_start,
         date_range_end,
         time_start_hour,
@@ -492,170 +442,108 @@ def build_visualization_tab():
         time_end_minute,
         meta_x=None,
         meta_y=None,
-        correctness_mode="Ignore correctness flags"  # Add correctness_mode parameter with default
+        correctness_mode="Ignore correctness flags"
     ):
-        """Creates a temporal scatter plot showing detections by date and time of day."""
         if not proc_state or not proc_state.processor:
             raise gr.Error("Please load predictions first")
-            
-        if proc_state.class_thresholds is None:
+
+        processor = proc_state.processor
+        thresholds_df = proc_state.class_thresholds
+
+        if thresholds_df is None:
             raise gr.Error("Class thresholds not initialized. Load data first.")
-            
-        # Validate thresholds from state
-        validated_thresholds_df = proc_state.class_thresholds
-            
-        # Get data and apply all filters
-        df = proc_state.processor.get_data()
-        
-        # Apply class and recording filters
-        col_class = proc_state.processor.get_column_name("Class")
-        conf_col = proc_state.processor.get_column_name("Confidence")
-        corr_col = proc_state.processor.get_column_name("Correctness")
-        
-        # Check if correctness column exists; if not, try both capitalization forms
-        if corr_col not in df.columns:
-            # Try both 'correctness' and 'Correctness'
-            alt_corr_col = 'correctness' if corr_col == 'Correctness' else 'Correctness'
-            if alt_corr_col in df.columns:
-                print(f"Switching to alternative correctness column: '{alt_corr_col}'")
-                corr_col = alt_corr_col
-            else:
-                # Create an empty correctness column if none exists
-                print(f"No correctness column found, creating a placeholder")
-                df[corr_col] = None
-            
-        if selected_classes_list:
-            df = df[df[col_class].isin(selected_classes_list)]
-        if selected_recordings_list:
-            selected_recordings_list = [rec.lower() for rec in selected_recordings_list]
-            df["recording_filename"] = df["recording_filename"].apply(
-                lambda x: os.path.splitext(os.path.basename(x.strip()))[0].lower() 
-                if isinstance(x, str) else x
-            )
-            df = df[df["recording_filename"].isin(selected_recordings_list)]
-            
-        # Apply class-specific confidence thresholds
-        df = apply_class_thresholds(df, validated_thresholds_df, col_class, conf_col)
-        
-        # Apply date and time filters
-        df = apply_datetime_filters(
-            df, 
-            date_range_start, 
-            date_range_end,
-            time_start_hour,
-            time_start_minute,
-            time_end_hour,
-            time_end_minute
-        )
-        
-        # Normalize correctness values
-        df[corr_col] = df[corr_col].map({
-            'true': True, 'True': True, True: True, 1: True,
-            'false': False, 'False': False, False: False, 0: False,
-            'nan': None, 'none': None, '': None, 'null': None, 'NA': None
-        }, na_action='ignore')
-        
-        # Apply correctness filter based on selected mode
-        if correctness_mode == "Show only correct":
-            df = df[df[corr_col] == True]
-        elif correctness_mode == "Show only incorrect":
-            df = df[df[corr_col] == False]
-        elif correctness_mode == "Show only unspecified":
-            df = df[df[corr_col].isna()]
-        
-        if df.empty:
-            raise gr.Error("No data matches the selected filters")
-        
+
+        time_start = combine_time_components(time_start_hour, time_start_minute)
+        time_end = combine_time_components(time_end_hour, time_end_minute)
+
         try:
-            # Use the new TemporalScatterPlotter class
+            filtered_df = processor.get_filtered_data(
+                selected_classes=selected_classes_list,
+                selected_recordings=selected_recordings_list,
+                selected_sites=selected_sites_list,
+                date_range_start=date_range_start,
+                date_range_end=date_range_end,
+                time_start=time_start,
+                time_end=time_end,
+                correctness_mode=correctness_mode,
+                class_thresholds=thresholds_df,
+            )
+        except Exception as e:
+            print(f"Error during filtering: {e}")
+            traceback.print_exc()
+            raise gr.Error(f"Error filtering data: {str(e)}")
+
+        if filtered_df.empty:
+            raise gr.Error("No data matches the selected filters")
+
+        col_class = "Class"
+        conf_col = "Confidence"
+
+        try:
             plotter = TemporalScatterPlotter(
-                data=df,
+                data=filtered_df,
                 class_col=col_class,
                 conf_col=conf_col
             )
-            
+
             fig = plotter.plot(title="Temporal Distribution of Detections")
-            
-            # Calculate mean latitude and longitude for sunrise/sunset calculations
-            # Try to get coordinates from the data or use a default
+
             try:
-                # First check if we have latitude/longitude in the dataframe
-                if 'latitude' in df.columns and 'longitude' in df.columns and not df['latitude'].isnull().all() and not df['longitude'].isnull().all():
-                    mean_lat = df['latitude'].mean()
-                    mean_lon = df['longitude'].mean()
-                    print(f"Using coordinates from data: {mean_lat}, {mean_lon}")
-                    
-                    # Add sunrise/sunset lines using the plotter method
+                if 'Latitude' in filtered_df.columns and 'Longitude' in filtered_df.columns and \
+                   filtered_df['Latitude'].notna().any() and filtered_df['Longitude'].notna().any():
+                    mean_lat = filtered_df['Latitude'].mean()
+                    mean_lon = filtered_df['Longitude'].mean()
+                    print(f"Using coordinates from filtered data: {mean_lat}, {mean_lon}")
                     fig = plotter.add_sunrise_sunset(fig, mean_lat, mean_lon)
-                    
-                # If not, see if we can get them from metadata using provided column names
-                elif proc_state.metadata_dir:
+                elif proc_state.metadata_dir and meta_x and meta_y:
                     meta_dir = Path(proc_state.metadata_dir)
-                    # Look for CSV or XLSX files
                     meta_files = list(meta_dir.glob("*.csv")) + list(meta_dir.glob("*.xlsx"))
-                    if not meta_files:
-                        raise ValueError("No metadata CSV or XLSX files found in the metadata directory")
-                        
-                    # Read the first found file
-                    first_meta_file = meta_files[0]
-                    if str(first_meta_file).lower().endswith('.xlsx'):
-                        metadata_df = pd.read_excel(first_meta_file, sheet_name=0)
-                    else: # Assume CSV otherwise
-                        metadata_df = pd.read_csv(first_meta_file)
-                        
-                    print(f"Metadata columns available: {metadata_df.columns.tolist()}")
-                        
-                    # First try using the explicitly provided meta_x and meta_y from UI
-                    lat_col = meta_x
-                    lon_col = meta_y
-                        
-                    # If not provided, try common column names
-                    if not lat_col or not lon_col or lat_col not in metadata_df.columns or lon_col not in metadata_df.columns:
-                        print("Metadata column names not provided or invalid, trying common column names...")
-                        lat_cols = ['latitude', 'lat', 'y', 'Y', 'LAT', 'Latitude']
-                        lon_cols = ['longitude', 'lon', 'long', 'x', 'X', 'LON', 'Longitude']
-                            
-                        lat_col = next((col for col in lat_cols if col in metadata_df.columns), None)
-                        lon_col = next((col for col in lon_cols if col in metadata_df.columns), None)
-                    
-                    if lat_col is None or lon_col is None:
-                        raise ValueError(f"Could not find latitude/longitude columns in metadata. Available columns: {', '.join(metadata_df.columns)}")
-                            
-                    print(f"Using metadata columns: {lat_col} for latitude, {lon_col} for longitude")
-                    mean_lat = pd.to_numeric(metadata_df[lat_col], errors='coerce').mean()
-                    mean_lon = pd.to_numeric(metadata_df[lon_col], errors='coerce').mean()
-                    
-                    # Check that we have valid coordinates
-                    if pd.isna(mean_lat) or pd.isna(mean_lon):
-                        raise ValueError("Invalid coordinates (NaN values)")
-                            
-                    print(f"Using average location: {mean_lat}, {mean_lon}")
-                    fig = plotter.add_sunrise_sunset(fig, mean_lat, mean_lon)
-                            
+                    if meta_files:
+                        first_meta_file = meta_files[0]
+                        if str(first_meta_file).lower().endswith('.xlsx'):
+                            metadata_df = pd.read_excel(first_meta_file, sheet_name=0)
+                        else:
+                            metadata_df = pd.read_csv(first_meta_file)
+
+                        lat_col = meta_x
+                        lon_col = meta_y
+                        if lat_col in metadata_df.columns and lon_col in metadata_df.columns:
+                             mean_lat = pd.to_numeric(metadata_df[lat_col], errors='coerce').mean()
+                             mean_lon = pd.to_numeric(metadata_df[lon_col], errors='coerce').mean()
+                             if pd.notna(mean_lat) and pd.notna(mean_lon):
+                                 print(f"Using average location from metadata file: {mean_lat}, {mean_lon}")
+                                 fig = plotter.add_sunrise_sunset(fig, mean_lat, mean_lon)
+                             else:
+                                 print("Could not calculate mean coordinates from metadata file.")
+                        else:
+                             print(f"Specified metadata columns '{lat_col}' or '{lon_col}' not found in file.")
+                    else:
+                        print("No metadata file found for sunrise/sunset fallback.")
+
             except Exception as e:
                 print(f"Error adding sunrise/sunset lines: {str(e)}")
-                import traceback
                 traceback.print_exc()
-            
-            # Update state with new color map for consistency
+
             new_state = ProcessorState(
                 processor=proc_state.processor,
                 prediction_dir=proc_state.prediction_dir,
                 metadata_dir=proc_state.metadata_dir,
                 color_map=plotter.color_map,
-                class_thresholds=validated_thresholds_df
+                class_thresholds=thresholds_df
             )
-            
+
             return [new_state, gr.update(value=fig, visible=True)]
-            
+
         except Exception as e:
             print(f"Error creating temporal scatter plot: {str(e)}")
-            import traceback
-            traceback.print_exc()  # Print the full traceback for debugging
-            raise gr.Error(f"Error creating temporal scatter plot: {str(e)[:100]}...")
+            traceback.print_exc()
+            raise gr.Error(f"Error creating temporal scatter plot: {str(e)}")
 
     def plot_spatial_distribution(
         proc_state: ProcessorState,
+        selected_classes_list,
+        selected_recordings_list,
+        selected_sites_list,
         meta_x,
         meta_y,
         meta_site,
@@ -667,145 +555,108 @@ def build_visualization_tab():
         time_end_minute,
         correctness_mode="Ignore correctness flags"
     ):
-        """Plot spatial distribution of predictions by class."""
         if not proc_state or not proc_state.processor:
             raise gr.Error("Please load predictions first")
-            
-        if proc_state.class_thresholds is None:
-            raise gr.Error("Class thresholds not initialized. Load data first.") 
-            
-        try:
-            # Validate thresholds from state
-            validated_thresholds_df = proc_state.class_thresholds
+        if not proc_state.metadata_dir:
+             raise gr.Error("Metadata directory not set. Please select metadata files.")
 
-            # Read metadata file from the provided directory (CSV or XLSX)
+        processor = proc_state.processor
+        thresholds_df = proc_state.class_thresholds
+
+        if thresholds_df is None:
+            raise gr.Error("Class thresholds not initialized. Load data first.")
+
+        try:
             meta_dir = Path(proc_state.metadata_dir)
             meta_files = list(meta_dir.glob("*.csv")) + list(meta_dir.glob("*.xlsx"))
             if not meta_files:
-                raise gr.Error("No metadata CSV or XLSX files found")
-                
-            # Read the first found file
+                raise gr.Error("No metadata CSV or XLSX files found in the specified directory.")
+
             first_meta_file = meta_files[0]
+            print(f"Loading metadata from: {first_meta_file}")
             if str(first_meta_file).lower().endswith('.xlsx'):
                 metadata_df = pd.read_excel(first_meta_file, sheet_name=0)
-            else: # Assume CSV otherwise
-                metadata_df = pd.read_csv(first_meta_file)
-            
-            # Ensure expected source columns exist
-            if meta_x not in metadata_df.columns or meta_y not in metadata_df.columns:
-                raise gr.Error("Metadata file missing expected coordinate columns.")
-            # Convert columns and create standardized 'latitude' and 'longitude'
-            metadata_df = metadata_df.copy()
-            metadata_df['latitude'] = pd.to_numeric(metadata_df[meta_x], errors='coerce')
-            metadata_df['longitude'] = pd.to_numeric(metadata_df[meta_y], errors='coerce')
-            
-            # Store all unique locations from metadata before filtering
-            all_locations_df = metadata_df.copy()
-            all_locations_df = all_locations_df.rename(columns={meta_site: 'site_name'})
-            all_locations_df = all_locations_df[['site_name', 'latitude', 'longitude']].drop_duplicates()
-            
-            # Set metadata into processor
-            proc_state.processor.set_metadata(metadata_df, site_col=meta_site, lat_col='latitude', lon_col='longitude')
-            
-            # Get prediction data and apply filters
-            df = proc_state.processor.get_data()
-            
-            # Apply class-specific confidence threshold filter using validated thresholds
-            conf_col = proc_state.processor.get_column_name("Confidence")
-            class_col = proc_state.processor.get_column_name("Class")
-            corr_col = proc_state.processor.get_column_name("Correctness")
-            
-            # Check if correctness column exists; if not, try both capitalization forms
-            if corr_col not in df.columns:
-                # Try both 'correctness' and 'Correctness'
-                alt_corr_col = 'correctness' if corr_col == 'Correctness' else 'Correctness'
-                if alt_corr_col in df.columns:
-                    print(f"Switching to alternative correctness column: '{alt_corr_col}'")
-                    corr_col = alt_corr_col
-                else:
-                    # Create an empty correctness column if none exists
-                    print(f"No correctness column found, creating a placeholder")
-                    df[corr_col] = None
-                    
-            df = apply_class_thresholds(df, validated_thresholds_df, class_col, conf_col)
-            
-            # Apply date and time filters
-            df = apply_datetime_filters(
-                df, 
-                date_range_start, 
-                date_range_end, 
-                time_start_hour, 
-                time_start_minute, 
-                time_end_hour, 
-                time_end_minute
-            )
-            
-            # Normalize correctness values
-            df[corr_col] = df[corr_col].map({
-                'true': True, 'True': True, True: True, 1: True,
-                'false': False, 'False': False, False: False, 0: False,
-                'nan': None, 'none': None, '': None, 'null': None, 'NA': None
-            }, na_action='ignore')
-            
-            # Apply correctness filter based on selected mode
-            if correctness_mode == "Show only correct":
-                df = df[df[corr_col] == True]
-            elif correctness_mode == "Show only incorrect":
-                df = df[df[corr_col] == False]
-            elif correctness_mode == "Show only unspecified":
-                df = df[df[corr_col].isna()]
-            
-            # Ensure that latitude and longitude exist in the data after merge
-            for col in ['latitude', 'longitude']:
-                if col not in df.columns:
-                    raise gr.Error(f"Column '{col}' is missing after merging metadata.")
-            
-            # Create aggregated dataframe with counts by location and class
-            agg_df = df.groupby(['site_name', 'latitude', 'longitude', class_col]).size().reset_index(name='count')
-            
-            # Get existing color map or create one
-            plotter = SpatialDistributionPlotter(class_col=class_col)
-            
-            # Init color map with TimeDistributionPlotter's exact algorithm if needed
-            if not proc_state.color_map:
-                # If we have no color map yet, create one using all classes for consistency
-                all_classes = sorted(df[class_col].unique())
-                # Get a TimeDistributionPlotter to initialize colors consistently
-                time_plotter = TimeDistributionPlotter(data=df, class_col=class_col)
-                shared_color_map = time_plotter._get_color_map(all_classes)
-                # Debug output
-                print("Creating new color map from TimeDistributionPlotter:")
-                for cls in sorted(all_classes):
-                    print(f"  {cls}: {shared_color_map.get(cls)}")
-                plotter.color_map = shared_color_map
             else:
-                # Use existing color map - fix color consistency
-                print("Using existing color map:")
-                for cls in sorted(proc_state.color_map.keys()):
-                    print(f"  {cls}: {proc_state.color_map.get(cls)}")
+                 try:
+                      metadata_df = pd.read_csv(first_meta_file, sep=None, engine='python', encoding='utf-8-sig')
+                 except Exception as e_utf8:
+                      print(f"Metadata read failed with utf-8-sig ({e_utf8}), trying latin1...")
+                      try:
+                           metadata_df = pd.read_csv(first_meta_file, sep=None, engine='python', encoding='latin1')
+                      except Exception as e_latin1:
+                           raise gr.Error(f"Failed to read metadata file '{first_meta_file.name}' with common encodings: {e_latin1}")
+
+            if meta_site not in metadata_df.columns: raise gr.Error(f"Metadata site column '{meta_site}' not found.")
+            if meta_x not in metadata_df.columns: raise gr.Error(f"Metadata latitude column '{meta_x}' not found.")
+            if meta_y not in metadata_df.columns: raise gr.Error(f"Metadata longitude column '{meta_y}' not found.")
+
+            processor.set_metadata(metadata_df, site_col=meta_site, lat_col=meta_x, lon_col=meta_y)
+            print("Metadata set in processor.")
+
+            all_locations_df = processor.metadata_df[['site_name', 'latitude', 'longitude']].drop_duplicates().copy()
+            print(f"Found {len(all_locations_df)} unique locations in metadata.")
+
+            time_start = combine_time_components(time_start_hour, time_start_minute)
+            time_end = combine_time_components(time_end_hour, time_end_minute)
+
+            filtered_df = processor.get_filtered_data(
+                selected_classes=selected_classes_list,
+                selected_recordings=selected_recordings_list,
+                selected_sites=selected_sites_list,
+                date_range_start=date_range_start,
+                date_range_end=date_range_end,
+                time_start=time_start,
+                time_end=time_end,
+                correctness_mode=correctness_mode,
+                class_thresholds=thresholds_df,
+            )
+            print(f"Filtered data shape: {filtered_df.shape}")
+
+            if filtered_df.empty:
+                raise gr.Error("No data matches the selected filters")
+
+            if 'Latitude' not in filtered_df.columns or 'Longitude' not in filtered_df.columns:
+                 raise gr.Error("Latitude/Longitude columns missing after filtering. Check metadata processing.")
+            if filtered_df['Latitude'].isna().all() or filtered_df['Longitude'].isna().all():
+                 raise gr.Error("All Latitude/Longitude values are missing in the filtered data. Check site ID matching and metadata.")
+
+            class_col = "Class"
+            site_col = "Site"
+            lat_col = "Latitude"
+            lon_col = "Longitude"
+
+            agg_df = filtered_df.groupby([site_col, lat_col, lon_col, class_col]).size().reset_index(name='count')
+            print(f"Aggregated data shape for plotting: {agg_df.shape}")
+
+            plotter = SpatialDistributionPlotter(class_col=class_col)
+
+            if proc_state.color_map:
+                print("Using existing color map from state.")
                 plotter.color_map = proc_state.color_map.copy()
-            
-            # Generate the plot
+            else:
+                filtered_classes = sorted(filtered_df[class_col].unique())
+                temp_plotter = TimeDistributionPlotter(data=filtered_df, class_col=class_col)
+                plotter.color_map = temp_plotter._get_color_map(filtered_classes)
+                print("Created new color map based on filtered data.")
+
             fig = plotter.plot(
                 agg_df=agg_df,
                 all_locations_df=all_locations_df,
                 title="Spatial Distribution of Predictions by Class"
             )
-            
-            # Update state with new color map for consistency
+
             new_state = ProcessorState(
-                processor=proc_state.processor,
+                processor=processor,
                 prediction_dir=proc_state.prediction_dir,
                 metadata_dir=proc_state.metadata_dir,
                 color_map=plotter.color_map,
-                class_thresholds=validated_thresholds_df
+                class_thresholds=thresholds_df
             )
-            
+
             return [new_state, gr.update(value=fig, visible=True)]
         except Exception as e:
             print(f"Error creating map: {str(e)}")
-            import traceback
-            traceback.print_exc()  # Print the full traceback for debugging
+            traceback.print_exc()
             raise gr.Error(f"Error creating map: {str(e)}")
 
     def plot_time_distribution(
@@ -814,92 +665,54 @@ def build_visualization_tab():
         use_boxplot: bool,
         selected_classes_list,
         selected_recordings_list,
+        selected_sites_list,
         date_range_start,
         date_range_end,
         time_start_hour,
         time_start_minute,
         time_end_hour,
         time_end_minute,
-        correctness_mode="Ignore correctness flags"  # Add correctness_mode parameter with default
+        correctness_mode="Ignore correctness flags"
     ):
-        """Creates time distribution plot with all filters applied."""
         if not proc_state or not proc_state.processor:
             raise gr.Error("Please load predictions first")
-            
-        if proc_state.class_thresholds is None:
+
+        processor = proc_state.processor
+        thresholds_df = proc_state.class_thresholds
+
+        if thresholds_df is None:
             raise gr.Error("Class thresholds not initialized. Load data first.")
-            
-        # Validate thresholds from state
-        validated_thresholds_df = proc_state.class_thresholds
-            
-        # Get data and apply all filters
-        df = proc_state.processor.get_data()
-        
-        # Apply class and recording filters
-        col_class = proc_state.processor.get_column_name("Class")
-        conf_col = proc_state.processor.get_column_name("Confidence")
-        corr_col = proc_state.processor.get_column_name("Correctness")
-        
-        # Check if correctness column exists; if not, try both capitalization forms
-        if corr_col not in df.columns:
-            # Try both 'correctness' and 'Correctness'
-            alt_corr_col = 'correctness' if corr_col == 'Correctness' else 'Correctness'
-            if alt_corr_col in df.columns:
-                print(f"Switching to alternative correctness column: '{alt_corr_col}'")
-                corr_col = alt_corr_col
-            else:
-                # Create an empty correctness column if none exists
-                print(f"No correctness column found, creating a placeholder")
-                df[corr_col] = None
-                
-        if selected_classes_list:
-            df = df[df[col_class].isin(selected_classes_list)]
-        if selected_recordings_list:
-            selected_recordings_list = [rec.lower() for rec in selected_recordings_list]
-            df["recording_filename"] = df["recording_filename"].apply(
-                lambda x: os.path.splitext(os.path.basename(x.strip()))[0].lower() 
-                if isinstance(x, str) else x
+
+        time_start = combine_time_components(time_start_hour, time_start_minute)
+        time_end = combine_time_components(time_end_hour, time_end_minute)
+
+        try:
+            filtered_df = processor.get_filtered_data(
+                selected_classes=selected_classes_list,
+                selected_recordings=selected_recordings_list,
+                selected_sites=selected_sites_list,
+                date_range_start=date_range_start,
+                date_range_end=date_range_end,
+                time_start=time_start,
+                time_end=time_end,
+                correctness_mode=correctness_mode,
+                class_thresholds=thresholds_df,
             )
-            df = df[df["recording_filename"].isin(selected_recordings_list)]
-            
-        # Apply class-specific confidence thresholds using validated thresholds
-        df = apply_class_thresholds(df, validated_thresholds_df, col_class, conf_col)
-        
-        # Apply date and time filters
-        df = apply_datetime_filters(
-            df, 
-            date_range_start, 
-            date_range_end,
-            time_start_hour,
-            time_start_minute,
-            time_end_hour,
-            time_end_minute
-        )
-        
-        # Normalize correctness values
-        df[corr_col] = df[corr_col].map({
-            'true': True, 'True': True, True: True, 1: True,
-            'false': False, 'False': False, False: False, 0: False,
-            'nan': None, 'none': None, '': None, 'null': None, 'NA': None
-        }, na_action='ignore')
-        
-        # Apply correctness filter based on selected mode
-        if correctness_mode == "Show only correct":
-            df = df[df[corr_col] == True]
-        elif correctness_mode == "Show only incorrect":
-            df = df[df[corr_col] == False]
-        elif correctness_mode == "Show only unspecified":
-            df = df[df[corr_col].isna()]
-        
-        if df.empty:
+        except Exception as e:
+            print(f"Error during filtering: {e}")
+            traceback.print_exc()
+            raise gr.Error(f"Error filtering data: {str(e)}")
+
+        if filtered_df.empty:
             raise gr.Error("No data matches the selected filters")
-            
-        # Create plotter and generate plot
+
+        col_class = "Class"
+
         plotter = TimeDistributionPlotter(
-            data=df,
+            data=filtered_df,
             class_col=col_class
         )
-        
+
         try:
             fig = plotter.plot_distribution(
                 time_period=time_period,
@@ -908,61 +721,110 @@ def build_visualization_tab():
             )
             return gr.update(value=fig, visible=True)
         except Exception as e:
+            print(f"Error creating time distribution plot: {e}")
+            traceback.print_exc()
             raise gr.Error(f"Error creating time distribution plot: {str(e)}")
 
+    def calculate_detections_action(
+        proc_state: ProcessorState,
+        selected_classes_list,
+        selected_recordings_list,
+        selected_sites_list,
+        date_range_start,
+        date_range_end,
+        time_start_hour,
+        time_start_minute,
+        time_end_hour,
+        time_end_minute,
+        correctness_mode="Ignore correctness flags"
+    ):
+        if not proc_state or not proc_state.processor:
+            raise gr.Error("Please load predictions first")
+
+        processor = proc_state.processor
+        thresholds_df = proc_state.class_thresholds
+
+        if thresholds_df is None:
+            raise gr.Error("Class thresholds not initialized. Load data first.")
+
+        time_start = combine_time_components(time_start_hour, time_start_minute)
+        time_end = combine_time_components(time_end_hour, time_end_minute)
+
+        try:
+            filtered_df = processor.get_filtered_data(
+                selected_classes=selected_classes_list,
+                selected_recordings=selected_recordings_list,
+                selected_sites=selected_sites_list,
+                date_range_start=date_range_start,
+                date_range_end=date_range_end,
+                time_start=time_start,
+                time_end=time_end,
+                correctness_mode=correctness_mode,
+                class_thresholds=thresholds_df,
+            )
+        except Exception as e:
+            print(f"Error during filtering: {e}")
+            traceback.print_exc()
+            raise gr.Error(f"Error filtering data: {str(e)}")
+
+        if filtered_df.empty:
+            # Return an empty DataFrame wrapped in gr.update to clear the table
+            return gr.update(value=pd.DataFrame(columns=["Species", "Count", "Percentage"]), visible=True)
+
+        try:
+            counts_df = calculate_detection_counts(filtered_df)
+            # Return the calculated DataFrame wrapped in gr.update
+            return gr.update(value=counts_df, visible=True)
+        except Exception as e:
+            print(f"Error calculating detection counts: {e}")
+            traceback.print_exc()
+            raise gr.Error(f"Error calculating detection counts: {str(e)}")
+
     def get_selection_tables(directory):
-        """Reads prediction txt files and metadata csv/xlsx files from directory."""
         from pathlib import Path
         directory = Path(directory)
-        # Include .txt for predictions, .csv and .xlsx for metadata
         files = list(directory.glob("*.txt")) + list(directory.glob("*.csv")) + list(directory.glob("*.xlsx"))
         return files
 
     def download_threshold_template(proc_state: ProcessorState):
-        """Saves the current threshold table as a JSON file template."""
         if not proc_state or proc_state.class_thresholds is None or proc_state.class_thresholds.empty:
             raise gr.Error("No thresholds available to save. Load data first.")
-        
+
         try:
             thresholds_dict = {}
             for _, row in proc_state.class_thresholds.iterrows():
                 thresholds_dict[row['Class']] = float(row['Threshold'])
-            
+
             file_location = gu.save_file_dialog(
                 state_key="viz-threshold-template",
                 filetypes=("JSON (*.json)",),
                 default_filename="threshold_template.json",
             )
-            
+
             if file_location:
                 with open(file_location, "w") as f:
                     json.dump(thresholds_dict, f, indent=4)
-                
+
                 gr.Info("Threshold template saved successfully")
         except Exception as e:
             print(f"Error saving threshold template: {e}")
             raise gr.Error(f"Error saving threshold template: {e}")
 
     def select_threshold_json_file(proc_state: ProcessorState):
-        """Opens a file dialog to select a JSON threshold file and loads its contents."""
         if not proc_state or not proc_state.processor:
             gr.Warning("Processor not initialized. Load data first.")
             return proc_state, gr.update()
-        
+
         try:
-            # Call select_file - ensure filetypes is a tuple of strings
             file_path = gu.select_file(
-                filetypes=('JSON files (*.json)', 'All files (*.*)'), # Corrected format
+                filetypes=('JSON files (*.json)', 'All files (*.*)'),
                 state_key="viz-threshold-json"
             )
-            
+
             if not file_path:
-                # User canceled or no file selected (file_path is None or empty string)
                 return proc_state, gr.update()
-                
-            # Ensure file_path is a string before opening
+
             if not isinstance(file_path, str):
-                 # This case should ideally not happen if gu.select_file works correctly
                  raise TypeError(f"Expected a file path string, but got {type(file_path)}")
 
             with open(file_path, 'r') as f:
@@ -988,12 +850,12 @@ def build_visualization_tab():
                 if not isinstance(threshold, (int, float)):
                     warning_messages.append(f"Skipping non-numeric threshold for class '{cls}': {threshold}")
                     continue
-                
+
                 valid_threshold = float(threshold)
                 clipped_threshold = max(0.01, min(0.99, valid_threshold))
                 if clipped_threshold != valid_threshold:
                     warning_messages.append(f"Threshold for '{cls}' ({valid_threshold}) clipped to {clipped_threshold}.")
-                    
+
                 if cls in updated_thresholds_df.index:
                     updated_thresholds_df.loc[cls, 'Threshold'] = clipped_threshold
                     loaded_count += 1
@@ -1012,10 +874,10 @@ def build_visualization_tab():
                 color_map=proc_state.color_map,
                 class_thresholds=updated_thresholds_df
             )
-            
+
             gr.Info(f"Successfully loaded thresholds for {loaded_count} classes from JSON.")
             return new_state, gr.update(value=updated_thresholds_df)
-            
+
         except Exception as e:
             print(f"Error loading thresholds from JSON: {e}")
             gr.Error(f"Error loading thresholds from JSON: {str(e)}")
@@ -1033,12 +895,10 @@ def build_visualization_tab():
             """
         )
 
-        # States
         processor_state = gr.State()
         prediction_files_state = gr.State()
         metadata_files_state = gr.State()
 
-        # File Selection UI
         with gr.Row():
             with gr.Column():
                 prediction_select_directory_btn = gr.Button(loc.localize("eval-tab-prediction-selection-button-label"))
@@ -1053,7 +913,6 @@ def build_visualization_tab():
                     headers=[loc.localize("eval-tab-selections-column-file-header")],
                 )
 
-        # Prediction columns box (using gr.Group as in evaluation tab)
         with gr.Group(visible=False) as prediction_group:
             with gr.Accordion(loc.localize("eval-tab-prediction-col-accordion-label"), open=True):
                 with gr.Row():
@@ -1061,7 +920,6 @@ def build_visualization_tab():
                     for col in ["Start Time", "Class", "Confidence", "Recording", "Correctness"]:
                         prediction_columns[col] = gr.Dropdown(choices=[], label=localized_column_labels.get(col, col))
 
-        # Metadata columns box
         with gr.Group(visible=False) as metadata_group:
             with gr.Accordion(loc.localize("viz-tab-metadata-col-accordion-label"), open=True):
                 with gr.Row():
@@ -1074,8 +932,7 @@ def build_visualization_tab():
                             label += " (Decimal Degrees)"
                         metadata_columns[col] = gr.Dropdown(choices=[], label=label)
 
-        # Class and Recording Selection Box
-        with gr.Group(visible=True) as class_recording_group:
+        with gr.Group(visible=True) as selection_group:
             with gr.Accordion(loc.localize("viz-tab-class-recording-accordion-label"), open=False):
                 with gr.Row():
                     with gr.Column():
@@ -1096,8 +953,16 @@ def build_visualization_tab():
                             interactive=True,
                             elem_classes="custom-checkbox-group",
                         )
+                    with gr.Column():
+                        select_sites_checkboxgroup = gr.CheckboxGroup(
+                            choices=[],
+                            value=[],
+                            label="Sites",
+                            info="Select sites to include",
+                            interactive=True,
+                            elem_classes="custom-checkbox-group",
+                        )
 
-        # Parameters Box
         with gr.Group():
             with gr.Accordion(loc.localize("viz-tab-parameters-accordion-label"), open=False):
                 with gr.Row():
@@ -1131,8 +996,8 @@ def build_visualization_tab():
                                 label=loc.localize("viz-tab-start-time-label-minute"),
                                 interactive=True
                             )
-                    
-                    with gr.Column(): 
+
+                    with gr.Column():
                         with gr.Row():
                             time_end_hour = gr.Dropdown(
                                 choices=[f"{i:02d}" for i in range(24)],
@@ -1159,18 +1024,16 @@ def build_visualization_tab():
                         info="Show distribution as box plots instead of counts",
                         value=False
                     )
-                
-                # Threshold components 
+
                 with gr.Row():
                      class_thresholds_df = gr.DataFrame(
                          headers=["Class", "Threshold"],
                          datatype=["str", "number"],
                          label="Class Confidence Thresholds (Read-only)",
-                         interactive=False, # Make DataFrame read-only
+                         interactive=False,
                          visible=False,
                          col_count=(2, "fixed")
                      )
-                # Replace JSON Upload with Select JSON button and add Download button
                 with gr.Row():
                     threshold_json_select_btn = gr.Button(
                         "Select Threshold JSON File",
@@ -1185,60 +1048,54 @@ def build_visualization_tab():
                         scale=2
                     )
 
-                # Add correctness mode selection
                 correctness_mode = gr.Radio(
                     choices=[
                         "Ignore correctness flags",
                         "Show only correct",
                         "Show only incorrect",
                         "Show only unspecified"
-                    ],  # Removed "Distinguish all" option
+                    ],
                     value="Ignore correctness flags",
                     label="Correctness Filter Mode",
                     info="Select how to handle the correctness flags in visualizations",
                     interactive=True
                 )
 
-        # Warning message about model validation and interpretation
         gr.Markdown(
             """
-            <div style="background-color: #FFF3CD; color: #856404; padding: 10px; margin: 10px 0; 
+            <div style="background-color: #FFF3CD; color: #856404; padding: 10px; margin: 10px 0;
                       border-left: 5px solid #FFDD33; border-radius: 4px;">
-              <span style="font-weight: bold;">⚠️ Warning:</span> Visualizations should be interpreted with caution. 
-              Please verify model performance for your target species and environment before drawing conclusions. 
-              Confidence thresholds significantly affect detection rates - lower values increase detections but may 
+              <span style="font-weight: bold;">⚠️ Warning:</span> Visualizations should be interpreted with caution.
+              Please verify model performance for your target species and environment before drawing conclusions.
+              Confidence thresholds significantly affect detection rates - lower values increase detections but may
               introduce false positives.
             </div>
             """
         )
 
-        # Action button and output for smooth distribution plot
         plot_predictions_btn = gr.Button(
-            loc.localize("viz-tab-plot-distributions-button-label"), 
+            loc.localize("viz-tab-plot-distributions-button-label"),
             variant="huggingface"
         )
         smooth_distribution_output = gr.Plot(label=loc.localize("viz-tab-distribution-plot-label"), visible=False)
 
-        # Add map button and output after the existing plot components
         plot_map_btn = gr.Button(
-            loc.localize("viz-tab-plot-map-button-label"), 
+            loc.localize("viz-tab-plot-map-button-label"),
             variant="huggingface"
         )
         map_output = gr.Plot(label=loc.localize("viz-tab-map-plot-label"), visible=False)
 
-        # Add plot time distribution button after existing plot buttons
         plot_time_distribution_btn = gr.Button(
-            "Plot Time Distribution", 
+            "Plot Time Distribution",
             variant="huggingface"
         )
         time_distribution_output = gr.Plot(
             label="Time Distribution Plot",
             visible=False
         )
-        
-        # Add temporal scatter plot button and output
+
         plot_temporal_scatter_btn = gr.Button(
-            "Plot Temporal Scatter", 
+            "Plot Temporal Scatter",
             variant="huggingface"
         )
         temporal_scatter_output = gr.Plot(
@@ -1246,9 +1103,8 @@ def build_visualization_tab():
             visible=False
         )
 
-        # Add calculate detections button and output table
         calculate_detections_btn = gr.Button(
-            "Calculate Detections", 
+            "Calculate Detections",
             variant="huggingface"
         )
         detections_table = gr.DataFrame(
@@ -1256,11 +1112,10 @@ def build_visualization_tab():
             type="pandas",
             visible=False,
             interactive=False,
-            wrap=True,  # Enable text wrapping for better readability
-            column_widths=[200, 110, 80, 130, 90, 150, 110, 110, 80]  # Set widths for all columns
+            wrap=True,
+            column_widths=[200, 110, 80, 130, 90, 150, 110, 110, 80]
         )
 
-        # Interactions
         def get_selection_func(state_key, on_select):
             def select_directory_on_empty():
                 folder = gu.select_folder(state_key=state_key)
@@ -1291,15 +1146,12 @@ def build_visualization_tab():
             show_progress=True,
         )
 
-        # Add visibility toggle for metadata group
         metadata_directory_input.change(
             lambda x: gr.update(visible=bool(x)),
             inputs=[metadata_files_state],
             outputs=[metadata_group],
         )
 
-        # Update processor and selections when columns change or files change
-        # Consolidate triggers for update_selections
         update_triggers = [
             prediction_files_state,
             metadata_files_state,
@@ -1312,6 +1164,16 @@ def build_visualization_tab():
             metadata_columns["X"],
             metadata_columns["Y"],
         ]
+
+        def update_site_choices(proc_state: ProcessorState):
+            if not proc_state or not proc_state.processor or proc_state.processor.complete_df.empty:
+                return gr.update(choices=[], value=[])
+
+            if 'Site' in proc_state.processor.complete_df.columns:
+                sites = sorted(proc_state.processor.complete_df['Site'].dropna().unique())
+                return gr.update(choices=sites, value=sites)
+            else:
+                return gr.update(choices=[], value=[])
 
         for trigger in update_triggers:
             trigger.change(
@@ -1327,18 +1189,17 @@ def build_visualization_tab():
                     metadata_columns["Site"],
                     metadata_columns["X"],
                     metadata_columns["Y"],
-                    select_classes_checkboxgroup, # Pass current selections
-                    select_recordings_checkboxgroup, # Pass current selections
+                    select_classes_checkboxgroup,
+                    select_recordings_checkboxgroup,
                 ],
                 outputs=[
                     select_classes_checkboxgroup,
                     select_recordings_checkboxgroup,
                     processor_state,
-                    class_thresholds_df, # Output to update the DataFrame UI
-                    threshold_json_select_btn, # Update for JSON select button
-                    threshold_template_download_btn # Update for download button
+                    class_thresholds_df,
+                    threshold_json_select_btn,
+                    threshold_template_download_btn
                 ],
-                # Trigger date updates only on success of processor update
             ).success(
                 fn=update_datetime_defaults,
                 inputs=[processor_state],
@@ -1350,44 +1211,49 @@ def build_visualization_tab():
                     time_end_hour,
                     time_end_minute
                 ]
+            ).success(
+                 fn=update_site_choices,
+                 inputs=[processor_state],
+                 outputs=[select_sites_checkboxgroup]
             )
 
-        # Add click handlers for the new buttons
         threshold_json_select_btn.click(
             fn=select_threshold_json_file,
             inputs=[processor_state],
             outputs=[processor_state, class_thresholds_df],
-            api_name="select_threshold_json" # Add unique API name for better traceability
+            api_name="select_threshold_json"
         )
-        
+
         threshold_template_download_btn.click(
             fn=download_threshold_template,
             inputs=[processor_state]
         )
 
-        # Plot button action (Histogram - ignores class thresholds)
         plot_predictions_btn.click(
             fn=plot_predictions_action,
             inputs=[
                 processor_state,
                 select_classes_checkboxgroup,
                 select_recordings_checkboxgroup,
+                select_sites_checkboxgroup,
                 date_range_start,
                 date_range_end,
                 time_start_hour,
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
-                correctness_mode,  # Add correctness_mode input
+                correctness_mode,
             ],
             outputs=[processor_state, smooth_distribution_output]
         )
 
-        # Add click handler for map button (Uses class thresholds from state)
         plot_map_btn.click(
             fn=plot_spatial_distribution,
             inputs=[
                 processor_state,
+                select_classes_checkboxgroup,
+                select_recordings_checkboxgroup,
+                select_sites_checkboxgroup,
                 metadata_columns["X"],
                 metadata_columns["Y"],
                 metadata_columns["Site"],
@@ -1397,12 +1263,11 @@ def build_visualization_tab():
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
-                correctness_mode,  # Add correctness_mode input
+                correctness_mode,
             ],
             outputs=[processor_state, map_output]
         )
 
-        # Add click handler for time distribution button (Uses class thresholds from state)
         plot_time_distribution_btn.click(
             fn=plot_time_distribution,
             inputs=[
@@ -1411,24 +1276,25 @@ def build_visualization_tab():
                 use_boxplot,
                 select_classes_checkboxgroup,
                 select_recordings_checkboxgroup,
+                select_sites_checkboxgroup,
                 date_range_start,
                 date_range_end,
                 time_start_hour,
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
-                correctness_mode,  # Add correctness_mode input
+                correctness_mode,
             ],
             outputs=[time_distribution_output]
         )
-        
-        # Add click handler for temporal scatter button
+
         plot_temporal_scatter_btn.click(
             fn=plot_temporal_scatter,
             inputs=[
                 processor_state,
                 select_classes_checkboxgroup,
                 select_recordings_checkboxgroup,
+                select_sites_checkboxgroup,
                 date_range_start,
                 date_range_end,
                 time_start_hour,
@@ -1437,25 +1303,25 @@ def build_visualization_tab():
                 time_end_minute,
                 metadata_columns["X"],
                 metadata_columns["Y"],
-                correctness_mode,  # Add correctness_mode input
+                correctness_mode,
             ],
             outputs=[processor_state, temporal_scatter_output]
         )
 
-        # Add click handler for calculate detections button - using the imported function
         calculate_detections_btn.click(
-            fn=calculate_detection_counts,
+            fn=calculate_detections_action,
             inputs=[
                 processor_state,
                 select_classes_checkboxgroup,
                 select_recordings_checkboxgroup,
+                select_sites_checkboxgroup,
                 date_range_start,
                 date_range_end,
                 time_start_hour,
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
-                correctness_mode,  # Add correctness_mode input
+                correctness_mode,
             ],
             outputs=[detections_table]
         )

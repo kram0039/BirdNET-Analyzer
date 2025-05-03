@@ -19,7 +19,7 @@ from birdnet_analyzer.visualization.data_processor import DataProcessor
 
 # Import the ConfidencePlotter class 
 # (Adjust this import path as needed to match your project structure)
-from birdnet_analyzer.visualization.plotting.confidence_plotter import ConfidencePlotter
+from birdnet_analyzer.visualization.plotting.confidences import ConfidencePlotter
 
 
 def process_predictions(
