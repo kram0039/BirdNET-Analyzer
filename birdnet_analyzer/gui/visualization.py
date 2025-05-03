@@ -192,24 +192,87 @@ def build_visualization_tab():
     def update_metadata_columns(uploaded_files):
         """
         Called when user selects metadata files. Reads headers and updates dropdowns.
+        Explicitly handles semicolon-delimited CSV files.
         """
         cols = set()
         if uploaded_files:
             for file_obj in uploaded_files:
+                file_path = str(file_obj)  # Ensure it's a string path
+                print(f"Attempting to read metadata from: {file_path}")
+
                 try:
-                    # Try reading with CSV engine first
-                    df = pd.read_csv(file_obj, nrows=0)
-                    cols.update(df.columns)
-                except Exception:
+                    # Special handling for excel files
+                    if file_path.lower().endswith('.xlsx'):
+                        try:
+                            df = pd.read_excel(file_path, sheet_name=0, nrows=0)
+                            print(f"Successfully read Excel headers: {list(df.columns)}")
+                            cols.update(df.columns)
+                            continue  # Success, move to next file
+                        except Exception as e:
+                            print(f"Error reading Excel file: {e}")
+                            # Continue trying other methods...
+
+                    # Try with semicolon first - most important for European CSV
                     try:
-                        # Fallback to python engine with automatic delimiter detection
-                        df = pd.read_csv(file_obj, sep=None, engine="python", nrows=0)
+                        # Explicitly try semicolon with latin1 encoding (common for European files)
+                        df = pd.read_csv(file_path, sep=';', encoding='latin1', nrows=1)
+                        if len(df.columns) > 1:
+                            print(f"Successfully read with semicolon delimiter: {list(df.columns)}")
+                            cols.update(df.columns)
+                            continue  # Success, move to next file
+                        else:
+                            print("Only got one column with semicolon delimiter, trying other options")
+                    except Exception as e:
+                        print(f"Failed with semicolon delimiter: {e}")
+
+                    # If semicolon didn't work, try comma with different encodings
+                    encodings = ['utf-8', 'latin1', 'ISO-8859-1', 'cp1252']
+                    for encoding in encodings:
+                        try:
+                            df = pd.read_csv(file_path, sep=',', encoding=encoding, nrows=1)
+                            if len(df.columns) > 1:
+                                print(f"Successfully read with comma delimiter and {encoding} encoding: {list(df.columns)}")
+                                cols.update(df.columns)
+                                break  # Success with this encoding
+                        except Exception as e:
+                            print(f"Failed with comma and {encoding}: {e}")
+                    
+                    # If we got columns, continue to next file
+                    if df is not None and len(df.columns) > 1:
+                        continue
+
+                    # Last resort: try Python engine with auto-detection
+                    try:
+                        df = pd.read_csv(file_path, sep=None, engine='python', nrows=1)
+                        print(f"Successfully read with Python auto-detection: {list(df.columns)}")
                         cols.update(df.columns)
                     except Exception as e:
-                        print(f"Error reading file {file_obj}: {e}")
-                        gr.Warning(f"{loc.localize('eval-tab-warning-error-reading-file')} {file_obj}")
-        
+                        print(f"Python auto-detection failed: {e}")
+                        
+                        # Absolute last resort: try to manually read and split the header line
+                        try:
+                            with open(file_path, 'r', encoding='latin1') as f:
+                                header_line = f.readline().strip()
+                            
+                            # Try splitting by semicolon and comma
+                            if ';' in header_line:
+                                headers = header_line.split(';')
+                                print(f"Manual semicolon split found {len(headers)} headers")
+                                cols.update([h.strip('"\'') for h in headers])
+                            elif ',' in header_line:
+                                headers = header_line.split(',')
+                                print(f"Manual comma split found {len(headers)} headers")
+                                cols.update([h.strip('"\'') for h in headers])
+                        except Exception as e:
+                            print(f"Manual reading failed: {e}")
+
+                except Exception as e:
+                    print(f"Error reading headers from {file_path}: {e}")
+                    gr.Warning(f"{loc.localize('eval-tab-warning-error-reading-file')} {file_path}")
+
+        # Prepare dropdown options
         cols = [""] + sorted(list(cols))
+        print(f"Final columns found: {cols}")
         updates = []
         for label in ["Site", "X", "Y"]:
             default_val = metadata_default_columns.get(label)
@@ -527,11 +590,19 @@ def build_visualization_tab():
                     
                 # If not, see if we can get them from metadata using provided column names
                 elif proc_state.metadata_dir:
-                    meta_files = list(Path(proc_state.metadata_dir).glob("*.csv"))
+                    meta_dir = Path(proc_state.metadata_dir)
+                    # Look for CSV or XLSX files
+                    meta_files = list(meta_dir.glob("*.csv")) + list(meta_dir.glob("*.xlsx"))
                     if not meta_files:
-                        raise ValueError("No metadata CSV files found in the metadata directory")
+                        raise ValueError("No metadata CSV or XLSX files found in the metadata directory")
                         
-                    metadata_df = pd.read_csv(meta_files[0])
+                    # Read the first found file
+                    first_meta_file = meta_files[0]
+                    if str(first_meta_file).lower().endswith('.xlsx'):
+                        metadata_df = pd.read_excel(first_meta_file, sheet_name=0)
+                    else: # Assume CSV otherwise
+                        metadata_df = pd.read_csv(first_meta_file)
+                        
                     print(f"Metadata columns available: {metadata_df.columns.tolist()}")
                         
                     # First try using the explicitly provided meta_x and meta_y from UI
@@ -607,11 +678,18 @@ def build_visualization_tab():
             # Validate thresholds from state
             validated_thresholds_df = proc_state.class_thresholds
 
-            # Read metadata file from the provided directory
-            meta_files = list(Path(proc_state.metadata_dir).glob("*.csv"))
+            # Read metadata file from the provided directory (CSV or XLSX)
+            meta_dir = Path(proc_state.metadata_dir)
+            meta_files = list(meta_dir.glob("*.csv")) + list(meta_dir.glob("*.xlsx"))
             if not meta_files:
-                raise gr.Error("No metadata files found")
-            metadata_df = pd.read_csv(meta_files[0])
+                raise gr.Error("No metadata CSV or XLSX files found")
+                
+            # Read the first found file
+            first_meta_file = meta_files[0]
+            if str(first_meta_file).lower().endswith('.xlsx'):
+                metadata_df = pd.read_excel(first_meta_file, sheet_name=0)
+            else: # Assume CSV otherwise
+                metadata_df = pd.read_csv(first_meta_file)
             
             # Ensure expected source columns exist
             if meta_x not in metadata_df.columns or meta_y not in metadata_df.columns:
@@ -833,10 +911,11 @@ def build_visualization_tab():
             raise gr.Error(f"Error creating time distribution plot: {str(e)}")
 
     def get_selection_tables(directory):
-        """Reads prediction txt files and metadata csv files from directory."""
+        """Reads prediction txt files and metadata csv/xlsx files from directory."""
         from pathlib import Path
         directory = Path(directory)
-        files = list(directory.glob("*.txt")) + list(directory.glob("*.csv"))
+        # Include .txt for predictions, .csv and .xlsx for metadata
+        files = list(directory.glob("*.txt")) + list(directory.glob("*.csv")) + list(directory.glob("*.xlsx"))
         return files
 
     def download_threshold_template(proc_state: ProcessorState):
