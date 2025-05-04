@@ -362,6 +362,16 @@ def build_visualization_tab():
             gr.update(value="59"),
         ]
 
+    def update_site_choices(proc_state: ProcessorState):
+        if not proc_state or not proc_state.processor or proc_state.processor.complete_df.empty:
+            return gr.update(choices=[], value=[])
+
+        if 'Site' in proc_state.processor.complete_df.columns:
+            sites = sorted(proc_state.processor.complete_df['Site'].dropna().unique())
+            return gr.update(choices=sites, value=sites)
+        else:
+            return gr.update(choices=[], value=[])
+
     def combine_time_components(hour, minute) -> typing.Optional[datetime.time]:
         if hour is None or minute is None:
             return None
@@ -1164,16 +1174,6 @@ def build_visualization_tab():
             metadata_columns["X"],
             metadata_columns["Y"],
         ]
-
-        def update_site_choices(proc_state: ProcessorState):
-            if not proc_state or not proc_state.processor or proc_state.processor.complete_df.empty:
-                return gr.update(choices=[], value=[])
-
-            if 'Site' in proc_state.processor.complete_df.columns:
-                sites = sorted(proc_state.processor.complete_df['Site'].dropna().unique())
-                return gr.update(choices=sites, value=sites)
-            else:
-                return gr.update(choices=[], value=[])
 
         for trigger in update_triggers:
             trigger.change(
