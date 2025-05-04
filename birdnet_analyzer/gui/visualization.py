@@ -790,11 +790,43 @@ def build_visualization_tab():
             traceback.print_exc()
             raise gr.Error(f"Error calculating detection counts: {str(e)}")
 
-    def get_selection_tables(directory):
-        from pathlib import Path
-        directory = Path(directory)
-        files = list(directory.glob("*.txt")) + list(directory.glob("*.csv")) + list(directory.glob("*.xlsx"))
-        return files
+    def get_selection_tables(
+        directory,
+        patterns = ("*.txt", "*.csv", "*.tsv", "*.xlsx"),
+        recursive = True,
+    ):
+        """
+        Collect all prediction-table files under *directory*.
+
+        Parameters
+        ----------
+        directory : str | pathlib.Path
+            Root folder that the user selected in the GUI.
+        patterns  : iterable of str, default ("*.txt", "*.csv", "*.tsv", "*.xlsx")
+            Shell-style glob patterns to match (case-insensitive).
+            Adjust if you need a tighter filter.
+        recursive : bool, default True
+            • True  → walk the entire directory tree with Path.rglob  
+            • False → only look at files directly inside *directory*
+
+        Returns
+        -------
+        list[pathlib.Path]
+            Sorted list of matching files.
+        """
+        root = Path(directory).expanduser().resolve()
+        if not root.exists():
+            raise FileNotFoundError(root)
+
+        # Use rglob for deep search, glob for single level
+        gather = root.rglob if recursive else root.glob
+
+        files: list[Path] = []
+        for pattern in patterns:
+            files.extend(gather(pattern))
+
+        # Sort for consistent order (relative paths for readability)
+        return sorted(files, key=lambda p: p.as_posix().lower())
 
     def download_threshold_template(proc_state: ProcessorState):
         if not proc_state or proc_state.class_thresholds is None or proc_state.class_thresholds.empty:
