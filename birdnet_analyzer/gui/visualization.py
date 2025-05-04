@@ -76,6 +76,8 @@ def build_visualization_tab():
         "Y": loc.localize("viz-tab-column-longitude-label"),
     }
 
+    MAX_DEFAULT_CLASSES = 5  # Define the class limit
+
     def get_columns_from_uploaded_files(files):
         columns = set()
         if files:
@@ -326,19 +328,30 @@ def build_visualization_tab():
         new_classes = []
         new_recordings = []
 
+        # Determine default classes based on limit
+        default_classes = avail_classes
+        if len(avail_classes) > MAX_DEFAULT_CLASSES:
+            default_classes = avail_classes[:MAX_DEFAULT_CLASSES]
+            gr.Warning(
+                f"Found {len(avail_classes)} classes. Selecting the first {MAX_DEFAULT_CLASSES} "
+                f"by default for visualization clarity. You can change the selection in the Select classes and Recordings section."
+            )
+
         if current_classes:
             new_classes = [c for c in current_classes if c in avail_classes]
         if current_recordings:
             normalized_current = [str(r).strip() for r in current_recordings if isinstance(r, str)]
             new_recordings = [r for r in normalized_current if r in avail_recordings]
 
+        # If no valid current classes or initially empty, use the default set
         if not new_classes:
-            new_classes = avail_classes
+            new_classes = default_classes
+        # If no valid current recordings or initially empty, select all available
         if not new_recordings:
             new_recordings = avail_recordings
 
         return (
-            gr.update(choices=avail_classes, value=new_classes),
+            gr.update(choices=avail_classes, value=new_classes),  # Keep all choices available
             gr.update(choices=avail_recordings, value=new_recordings),
             state,
             threshold_df_update,
