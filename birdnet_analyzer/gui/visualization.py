@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 
 import birdnet_analyzer.gui.localization as loc
 import birdnet_analyzer.gui.utils as gu
-from birdnet_analyzer.visualization.data_processor import DataProcessor
+import birdnet_analyzer.visualization.data_processor as dp
 from birdnet_analyzer.visualization.plotting.confidences import ConfidencePlotter
 from birdnet_analyzer.visualization.plotting.time_distributions import TimeDistributionPlotter
 from birdnet_analyzer.visualization.plotting.temporal_scatter import TemporalScatterPlotter
@@ -133,7 +133,7 @@ def build_visualization_tab():
 
             print("Using column mappings:", cols_pred)
 
-            proc = DataProcessor(
+            proc = dp.DataProcessor(
                 prediction_directory_path=prediction_dir,
                 prediction_file_name=None,
                 columns_predictions=cols_pred,
@@ -1063,8 +1063,8 @@ def build_visualization_tab():
                         select_sites_checkboxgroup = gr.CheckboxGroup(
                             choices=[],
                             value=[],
-                            label="Sites",
-                            info="Select sites to include",
+                            label=loc.localize("viz-tab-sites-label"),
+                            info=loc.localize("viz-tab-sites-info"),
                             interactive=True,
                             elem_classes="custom-checkbox-group",
                         )
@@ -1119,21 +1119,8 @@ def build_visualization_tab():
                             )
 
                 with gr.Row():
-                    time_distribution_period = gr.Dropdown(
-                        choices=["hour", "day", "month", "year"],
-                        value="hour",
-                        label="Time Distribution Period",
-                        info="Select period for time distribution plot"
-                    )
-                    use_boxplot = gr.Checkbox(
-                        label="Use Box Plots",
-                        info="Show distribution as box plots instead of counts",
-                        value=False
-                    )
-
-                with gr.Row():
                      class_thresholds_df = gr.DataFrame(
-                         headers=["Class", "Threshold"],
+                         headers=[loc.localize("viz-tab-threshold-class-header"), loc.localize("viz-tab-threshold-value-header")],
                          datatype=["str", "number"],
                          label="Class Confidence Thresholds (Read-only)",
                          interactive=False,
@@ -1142,13 +1129,13 @@ def build_visualization_tab():
                      )
                 with gr.Row():
                     threshold_json_select_btn = gr.Button(
-                        "Select Threshold JSON File",
+                        loc.localize("viz-tab-select-threshold-json-button"),
                         variant="secondary",
                         visible=False,
                         scale=2
                     )
                     threshold_template_download_btn = gr.Button(
-                        "Download Threshold Template",
+                        loc.localize("viz-tab-download-threshold-template-button"),
                         variant="secondary",
                         visible=False,
                         scale=2
@@ -1156,14 +1143,14 @@ def build_visualization_tab():
 
                 correctness_mode = gr.Radio(
                     choices=[
-                        "Ignore correctness flags",
-                        "Show only correct",
-                        "Show only incorrect",
-                        "Show only unspecified"
+                        loc.localize("viz-tab-correctness-ignore"),
+                        loc.localize("viz-tab-correctness-only-correct"),
+                        loc.localize("viz-tab-correctness-only-incorrect"),
+                        loc.localize("viz-tab-correctness-only-unspecified")
                     ],
-                    value="Ignore correctness flags",
-                    label="Correctness Filter Mode",
-                    info="Select how to handle the correctness flags in visualizations",
+                    value=loc.localize("viz-tab-correctness-ignore"),
+                    label=loc.localize("viz-tab-correctness-mode-label"),
+                    info=loc.localize("viz-tab-correctness-mode-info"),
                     interactive=True
                 )
 
@@ -1192,25 +1179,39 @@ def build_visualization_tab():
         map_output = gr.Plot(label=loc.localize("viz-tab-map-plot-label"), visible=False)
 
         plot_time_distribution_btn = gr.Button(
-            "Plot Time Distribution",
+            loc.localize("viz-tab-plot-time-distribution-button-label"),
             variant="huggingface"
         )
+        # Options for this plot in an Accordion
+        with gr.Accordion(loc.localize("viz-tab-time-distribution-options-label"), open=False):
+             with gr.Row():
+                time_distribution_period = gr.Dropdown(
+                    choices=["hour", "day", "month", "year"],
+                    value="hour",
+                    label=loc.localize("viz-tab-time-period-label"),
+                    info=loc.localize("viz-tab-time-period-info")
+                )
+                use_boxplot = gr.Checkbox(
+                    label=loc.localize("viz-tab-use-boxplot-label"),
+                    info=loc.localize("viz-tab-use-boxplot-info"),
+                    value=False
+                )
         time_distribution_output = gr.Plot(
-            label="Time Distribution Plot",
+            label=loc.localize("viz-tab-time-distribution-plot-label"),
             visible=False
         )
 
         plot_temporal_scatter_btn = gr.Button(
-            "Plot Temporal Scatter",
+            loc.localize("viz-tab-plot-temporal-scatter-button-label"),
             variant="huggingface"
         )
         temporal_scatter_output = gr.Plot(
-            label="Temporal Scatter Plot",
+            label=loc.localize("viz-tab-temporal-scatter-plot-label"),
             visible=False
         )
 
         calculate_detections_btn = gr.Button(
-            "Calculate Detections",
+            loc.localize("viz-tab-calculate-detections-button-label"),
             variant="huggingface"
         )
         detections_table = gr.DataFrame(
