@@ -491,32 +491,43 @@ class DataProcessor:
         meta["lon_round"] = meta["longitude"].round(6)
 
         dups = meta[meta.duplicated(subset=["site_name"], keep=False)]
-        inconsistent_sites: list[tuple[str, list[str]]] = []
+        inconsistent_sites_to_remove: set[str] = set()
+        consistent_duplicate_count = 0 # Keep track for potential logging if needed
 
         if not dups.empty:
             for site, grp in dups.groupby("site_name"):
-                if grp[["lat_round", "lon_round"]].drop_duplicates().shape[0] > 1:
-                    coords = grp[["latitude", "longitude"]].drop_duplicates()
-                    coord_strs = [
-                        f"({row['latitude']:.4f}, {row['longitude']:.4f})"
-                        for _, row in coords.iterrows()
-                    ]
-                    inconsistent_sites.append((str(site), coord_strs))
+                # Check if all rounded coordinates within the group are the same
+                if grp[['lat_round', 'lon_round']].nunique().max() > 1:
+                    # Inconsistent coordinates found for this site ID
+                    inconsistent_sites_to_remove.add(site)
+                else:
+                    # Consistent coordinates, count duplicates beyond the first
+                    consistent_duplicate_count += len(grp) - 1
 
-        if inconsistent_sites:
-            msg = "Found duplicate site IDs with different coordinates in metadata:\n"
-            for site, coord_list in inconsistent_sites:
-                msg += f"  – Site '{site}' maps to: {', '.join(coord_list)}\n"
-            msg += "Please correct the metadata file."
-            gr.Error(msg)
-            print(f"ERROR: {msg}")
-            return
+        if inconsistent_sites_to_remove:
+            msg = (
+                "Found duplicate site IDs with different coordinates in metadata. "
+                "These sites will be removed:\n"
+                f"{', '.join(sorted(list(inconsistent_sites_to_remove)))}\n"
+                "Please correct the metadata file."
+            )
+            gr.Warning(msg)
+            print(f"WARNING: {msg}")
+            # Remove all rows associated with inconsistent site IDs
+            meta = meta[~meta['site_name'].isin(inconsistent_sites_to_remove)]
 
-        # keep only the first row for exact duplicates (same coords)
+        # Handle consistent duplicates (keep only the first occurrence)
+        # This needs to run *after* inconsistent sites are removed
         if meta.duplicated(subset=["site_name"], keep=False).any():
-            n_dupes = meta.duplicated(subset=["site_name"], keep=False).sum()
+            # Recalculate count after removing inconsistent sites
+            n_consistent_dupes_to_drop = meta.duplicated(subset=["site_name"], keep='first').sum()
             meta = meta.drop_duplicates(subset=["site_name"], keep="first")
-            print(f"Removed {n_dupes} duplicate metadata entries for identical coordinates.")
+            if n_consistent_dupes_to_drop > 0:
+                print(f"Removed {n_consistent_dupes_to_drop} duplicate metadata entries for sites with identical coordinates.")
+
+
+        # Drop temporary columns before proceeding
+        meta = meta.drop(columns=["lat_round", "lon_round"], errors='ignore')
 
         # ── 5. Drop sites without coordinates ────────────────────────────────────
         no_coord = meta["latitude"].isna() | meta["longitude"].isna()
