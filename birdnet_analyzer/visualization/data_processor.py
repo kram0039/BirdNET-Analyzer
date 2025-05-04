@@ -9,6 +9,8 @@ methods for filtering that data.
 import os
 import datetime
 import re
+import pathlib  # <-- Add pathlib import
+import itertools # <-- Add itertools import
 from typing import Dict, List, Optional, Tuple, Any
 
 import warnings
@@ -179,21 +181,42 @@ class DataProcessor:
         return None
 
     def _extract_site_id_from_filename(self, filename: str, valid_site_ids: Optional[set] = None) -> Optional[str]:
-        """Extracts site ID by checking filename parts against valid IDs."""
-        if not isinstance(filename, str) or not filename:
+        """Extracts site ID by checking filename parts against valid IDs. (DEPRECATED - use _match_site_id)"""
+        # ↪ deprecated – keep for back-compat, wraps the new logic
+        return self._match_site_id(filename, valid_site_ids)
+
+    def _match_site_id(
+        self,
+        recording_path: str | None,
+        valid_site_ids: set[str] | None = None,
+    ) -> str | None:
+        """
+        Match *recording_path* against *valid_site_ids* using three cascading rules.
+
+        Returns the **first** match found (priority 1 → 3) or ``None``.
+        """
+        if not recording_path or not isinstance(recording_path, str) or not valid_site_ids:
             return None
 
-        basename = os.path.splitext(filename)[0]
-        parts = basename.split('_')
+        # 1️⃣  whole stem -----------------------------------------------------------
+        path = pathlib.PurePath(recording_path)
+        stem = path.stem                      # e.g., "ABC123_20240503_120000"
+        if stem in valid_site_ids:
+            return stem
 
-        extracted_site_id = None
-        if valid_site_ids:
-            for part in parts:
-                if part in valid_site_ids:
-                    extracted_site_id = part
-                    break
+        # 2️⃣  underscore-delimited parts -----------------------------------------
+        for part in stem.split("_"):
+            if part in valid_site_ids:
+                return part
 
-        return extracted_site_id
+        # 3️⃣  directory names (outer → inner) ------------------------------------
+        #    PurePath.parts gives ('/', 'sites', 'ABC123', 'rec', 'xyz.wav') or ('c:\\', 'sites', ...)
+        #    Skip root (parts[0]) & filename (parts[-1]), walk top-to-bottom.
+        for folder in path.parts[1:-1]:
+            if folder in valid_site_ids:
+                return folder
+
+        return None
 
     def _process_data(self) -> None:
         """
@@ -225,25 +248,40 @@ class DataProcessor:
         df[conf_col] = pd.to_numeric(df[conf_col], errors='coerce').fillna(0.0)
 
         try:
+            # Store the original path string first
+            if recording_col in df.columns and df[recording_col].notna().any():
+                 df["recording_path_str"] = df[recording_col].astype(str)
+            elif "source_file" in df.columns:
+                 df["recording_path_str"] = df["source_file"].astype(str)
+            else:
+                 df["recording_path_str"] = "unknown_path" # Should ideally not happen if source_file is guaranteed
+
+            # Now extract basename and stem
             if recording_col in df.columns and df[recording_col].notna().any():
                 df["recording_filename_with_ext"] = df[recording_col].apply(
                     lambda x: os.path.basename(str(x)) if pd.notnull(x) else ""
                 )
             elif "source_file" in df.columns:
+                # Fallback to source_file if Recording column is missing/empty
                 df["recording_filename_with_ext"] = df["source_file"].apply(
                     lambda x: os.path.basename(str(x)) if pd.notnull(x) else ""
                 )
             else:
-                df["recording_filename_with_ext"] = "unknown_recording"
+                # If neither Recording nor source_file is useful, assign a default
+                df["recording_filename_with_ext"] = "unknown_recording.ext"
 
             df["recording_filename"] = df["recording_filename_with_ext"].apply(
                 lambda x: os.path.splitext(x)[0] if pd.notnull(x) else ""
             )
+            # Clean up potential empty strings after extraction
             df["recording_filename"] = df["recording_filename"].str.strip().replace('', pd.NA)
             df["recording_filename_with_ext"] = df["recording_filename_with_ext"].str.strip().replace('', pd.NA)
+            df["recording_path_str"] = df["recording_path_str"].str.strip().replace('', pd.NA)
+
 
         except Exception as e:
-            print(f"Warning: Error processing recording filenames: {e}")
+            print(f"Warning: Error processing recording filenames/paths: {e}")
+            df["recording_path_str"] = pd.NA
             df["recording_filename"] = pd.NA
             df["recording_filename_with_ext"] = pd.NA
 
@@ -286,8 +324,10 @@ class DataProcessor:
         # --- Site ID Extraction and Metadata Merging ---
         valid_site_ids = set(self.metadata_df['site_name'].dropna().astype(str).unique()) if self.metadata_df is not None else None
 
-        # Apply site ID extraction
-        df['site_name'] = df['recording_filename'].apply(lambda x: self._extract_site_id_from_filename(x, valid_site_ids))
+        # Apply site ID extraction using the new multi-level matching logic
+        df['site_name'] = df['recording_path_str'].apply(
+            lambda p: self._match_site_id(p, valid_site_ids)
+        )
 
         if self.metadata_df is not None:
             meta_to_merge = self.metadata_df[['site_name', 'latitude', 'longitude']].drop_duplicates(subset=['site_name']).set_index('site_name')
@@ -344,7 +384,7 @@ class DataProcessor:
             'prediction_time',
             'prediction_minute', 'prediction_second', 'prediction_dayofyear',
             'prediction_weekofyear', 'prediction_weekday',
-            'recording_filename_with_ext', 'source_file'
+            'recording_filename_with_ext', 'source_file', 'recording_path_str'
         ]
         if 'Recording' not in df.columns and 'recording_filename' in df.columns:
             if 'recording_filename' not in final_columns:
