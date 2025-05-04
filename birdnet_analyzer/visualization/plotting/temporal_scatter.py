@@ -111,120 +111,96 @@ class TemporalScatterPlotter:
         
         return fig
     
-    def add_sunrise_sunset(self, fig: go.Figure, latitude: float, longitude: float) -> go.Figure:
+    def add_sunrise_sunset(
+        self,
+        fig: go.Figure,
+        latitude: float,
+        longitude: float
+    ) -> go.Figure:
         """
-        Adds sunrise and sunset lines to the plot.
-        
-        Args:
-            fig (plotly.graph_objects.Figure): The figure to add lines to
-            latitude (float): Latitude for sunrise/sunset calculations
-            longitude (float): Longitude for sunrise/sunset calculations
-            
-        Returns:
-            plotly.graph_objects.Figure: The updated figure
+        Add local-time sunrise and sunset lines to *fig*.
+
+        Requires:
+        ─ pip install astral timezonefinder             # (pytz if Python < 3.9)
+
+        Parameters
+        ----------
+        fig : plotly.graph_objects.Figure
+            Figure returned by `plot()`.
+        latitude, longitude : float
+            Site coordinates in decimal degrees.
         """
         try:
             from astral import LocationInfo
             from astral.sun import sun
-            from datetime import timedelta
-            
-            # Get unique dates in the data
-            unique_dates = sorted(self.data['date'].unique())
+            from timezonefinder import TimezoneFinder
+            from datetime import timedelta, date
+
+            # ── tz helper ──────────────────────────────────────────────────
+            try:                     # Python ≥ 3.9
+                from zoneinfo import ZoneInfo
+                def _tz(name): return ZoneInfo(name)
+            except ModuleNotFoundError:     # older Python
+                import pytz                 # pip install pytz
+                def _tz(name): return pytz.timezone(name)
+
+            # ── 1.  Get IANA zone name for the lat/lon ─────────────────────
+            tz_name = TimezoneFinder().timezone_at(lat=latitude, lng=longitude)
+            if tz_name is None:           # ocean / fallback
+                tz_name = "UTC"
+            tz = _tz(tz_name)
+
+            site = LocationInfo("Site", tz_name, tz_name,
+                                latitude=latitude, longitude=longitude)
+
+            # ── 2.  Choose dates to evaluate (every 10 d + last) ───────────
+            unique_dates = sorted(self.data["date"].unique())
             if not unique_dates:
                 return fig
-                
-            # Create location info for the site's average location
-            site = LocationInfo("RecordingSite", "Region", "UTC", latitude, longitude)
-            
-            # Define color for sunrise/sunset lines
-            sun_line_color = "purple"
-            
-            # Calculate sunrise/sunset only every 10 days, starting from the first date
-            first_date = min(unique_dates)
-            last_date = max(unique_dates)
-            
-            # Find dates to calculate (every 10 days)
-            calculation_dates = []
-            current_date = first_date
-            while current_date <= last_date:
-                calculation_dates.append(current_date)
-                current_date += timedelta(days=10)
-            
-            # Include last date if it's not already included
-            if calculation_dates[-1] != last_date:
-                calculation_dates.append(last_date)
-                
-            # Calculate sunrise/sunset for the selected dates
-            sunrise_data = {}  # {date: decimal_time}
-            sunset_data = {}   # {date: decimal_time}
-            
-            for calc_date in calculation_dates:
-                try:
-                    sun_info = sun(site.observer, date=calc_date)
-                    
-                    # Extract sunrise and sunset times
-                    sunrise_time = sun_info['sunrise']
-                    sunset_time = sun_info['sunset']
-                    
-                    # Remove timezone info if present
-                    if sunrise_time.tzinfo is not None:
-                        sunrise_time = sunrise_time.replace(tzinfo=None)
-                    if sunset_time.tzinfo is not None:
-                        sunset_time = sunset_time.replace(tzinfo=None)
-                    
-                    # Convert to decimal hours for plotting
-                    sunrise_decimal = sunrise_time.hour + sunrise_time.minute/60 + sunrise_time.second/3600
-                    sunset_decimal = sunset_time.hour + sunset_time.minute/60 + sunset_time.second/3600
-                    
-                    # Store calculations
-                    sunrise_data[calc_date] = sunrise_decimal
-                    sunset_data[calc_date] = sunset_decimal
-                    
-                except Exception as e:
-                    print(f"Error calculating sunrise/sunset for {calc_date}: {str(e)}")
-            
-            # Create continuous sunrise and sunset lines
-            sunrise_x = []
-            sunrise_y = []
-            sunset_x = []
-            sunset_y = []
-            
-            # Convert calculated points to lists for plotting
-            for date_val in sorted(sunrise_data.keys()):
-                sunrise_x.append(date_val)
-                sunrise_y.append(sunrise_data[date_val])
-                
-                sunset_x.append(date_val)
-                sunset_y.append(sunset_data[date_val])
-            
-            # Add sunrise line
-            fig.add_trace(
-                go.Scatter(
-                    x=sunrise_x,
-                    y=sunrise_y,
-                    mode='lines',
-                    line=dict(color=sun_line_color, width=2),
-                    name='Sunrise',
-                    showlegend=True
-                )
-            )
-            
-            # Add sunset line
-            fig.add_trace(
-                go.Scatter(
-                    x=sunset_x,
-                    y=sunset_y,
-                    mode='lines',
-                    line=dict(color=sun_line_color, width=2),
-                    name='Sunset',
-                    showlegend=True
-                )
-            )
-                
-        except ImportError:
-            print("Astral is not installed. Install with: pip install astral")
-            
+
+            first_day, last_day = unique_dates[0], unique_dates[-1]
+
+            calc_days: list[date] = []
+            d = first_day
+            while d <= last_day:
+                calc_days.append(d)
+                d += timedelta(days=10)
+            if calc_days[-1] != last_day:
+                calc_days.append(last_day)
+
+            # ── 3.  Collect sunrise/sunset decimal-hours ───────────────────
+            sunrise_x, sunrise_y = [], []
+            sunset_x,  sunset_y  = [], []
+
+            for d in calc_days:
+                s = sun(site.observer, date=d, tzinfo=tz)  # tz-aware dt
+
+                for key, x_list, y_list in (("sunrise", sunrise_x, sunrise_y),
+                                            ("sunset",  sunset_x,  sunset_y )):
+                    t_local = s[key].astimezone(tz)        # local wall-clock
+                    dec = (t_local.hour +
+                           t_local.minute / 60 +
+                           t_local.second / 3600)
+                    x_list.append(d)
+                    y_list.append(dec)
+
+            # ── 4.  Plot lines ─────────────────────────────────────────────
+            line_style = dict(color="purple", width=2)
+
+            fig.add_trace(go.Scatter(
+                x=sunrise_x, y=sunrise_y, mode="lines",
+                line=line_style, name="Sunrise"
+            ))
+            fig.add_trace(go.Scatter(
+                x=sunset_x,  y=sunset_y,  mode="lines",
+                line=line_style, name="Sunset"
+            ))
+
+        except ImportError as e:
+            print("Missing dependency:", e)
+            print("Install with:  pip install astral timezonefinder pytz")
         except Exception as e:
-            print(f"Error adding sunrise/sunset lines: {str(e)}")
-            
+            print("Sunrise/sunset calculation failed:", e)
+
         return fig
+
