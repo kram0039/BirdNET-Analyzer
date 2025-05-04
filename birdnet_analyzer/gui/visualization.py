@@ -302,6 +302,38 @@ def build_visualization_tab():
             prediction_dir,
         )
 
+        # 2) NEW ► attach the metadata if everything is available ──────────────
+        if (
+            proc                                           # processor exists
+            and metadata_files                             # user chose meta files
+            and metadata_dir                               # metadata directory exists
+            and meta_site and meta_x and meta_y            # user mapped the columns
+        ):
+            try:
+                meta_path = Path(metadata_dir)
+                meta_file_list = list(meta_path.glob("*.csv")) + list(meta_path.glob("*.xlsx"))
+                if meta_file_list:
+                    first_meta_file = meta_file_list[0]
+                    print(f"Attempting to load metadata early from: {first_meta_file}")
+                    if str(first_meta_file).lower().endswith('.xlsx'):
+                        meta_df = pd.read_excel(first_meta_file, sheet_name=0)
+                    else:
+                        try:
+                            meta_df = pd.read_csv(first_meta_file, sep=None, engine="python")
+                        except Exception as e_utf8:
+                            print(f"UTF-8 read failed for {first_meta_file}, trying latin1: {e_utf8}")
+                            meta_df = pd.read_csv(first_meta_file, sep=None, engine="python", encoding='latin1')
+
+                    # let DataProcessor validate / clean the table
+                    proc.set_metadata(meta_df, site_col=meta_site, lat_col=meta_x, lon_col=meta_y)
+                    print("Metadata loaded early into processor.")
+                else:
+                    print("Metadata files selected, but no CSV/XLSX found in the directory for early loading.")
+            except Exception as e:
+                print(f"Error loading metadata early in update_selections: {e}")
+                # Optional: Raise a gr.Warning or just log the error
+                # gr.Warning(f"Could not load metadata during initial setup: {e}")
+
         class_thresholds_init_df = None
         threshold_df_update = gr.update(visible=False, value=None)
         threshold_json_btn_update = gr.update(visible=False)
