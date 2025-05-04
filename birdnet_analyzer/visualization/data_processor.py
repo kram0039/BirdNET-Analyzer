@@ -487,8 +487,8 @@ class DataProcessor:
             gr.Warning(f"Removed {len(bad_rows)} rows with invalid coordinates from metadata.")
 
         # ── 4. Duplicate / inconsistent site IDs ─────────────────────────────────
-        meta["lat_round"] = meta["latitude"].round(6)
-        meta["lon_round"] = meta["longitude"].round(6)
+        meta["lat_round"] = meta["latitude"].round(4)
+        meta["lon_round"] = meta["longitude"].round(4)
 
         dups = meta[meta.duplicated(subset=["site_name"], keep=False)]
         inconsistent_sites_to_remove: set[str] = set()
