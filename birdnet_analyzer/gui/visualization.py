@@ -356,7 +356,9 @@ def build_visualization_tab():
             state,
             threshold_df_update,
             threshold_json_btn_update,
-            threshold_download_btn_update
+            threshold_download_btn_update,
+            avail_classes,          # NEW – goes to classes_full_list_state
+            avail_recordings        # NEW – goes to recordings_full_list_state
         )
 
     def update_datetime_defaults(processor_state):
@@ -377,13 +379,16 @@ def build_visualization_tab():
 
     def update_site_choices(proc_state: ProcessorState):
         if not proc_state or not proc_state.processor or proc_state.processor.complete_df.empty:
-            return gr.update(choices=[], value=[])
+            # return both the UI update *and* the raw list (empty)
+            return (gr.update(choices=[], value=[]), [])
 
         if 'Site' in proc_state.processor.complete_df.columns:
             sites = sorted(proc_state.processor.complete_df['Site'].dropna().unique())
-            return gr.update(choices=sites, value=sites)
+            # return both the UI update *and* the raw list
+            return (gr.update(choices=sites, value=sites), sites)
         else:
-            return gr.update(choices=[], value=[])
+            # return both the UI update *and* the raw list (empty)
+            return (gr.update(choices=[],   value=[]),   [])
 
     def combine_time_components(hour, minute) -> typing.Optional[datetime.time]:
         if hour is None or minute is None:
@@ -953,6 +958,11 @@ def build_visualization_tab():
         processor_state = gr.State()
         prediction_files_state = gr.State()
         metadata_files_state = gr.State()
+        # NEW ─ keeps a copy of the *full* choice lists so the
+        #       “Select-All / Deselect-All” buttons know what to do
+        classes_full_list_state     = gr.State([])
+        recordings_full_list_state  = gr.State([])
+        sites_full_list_state       = gr.State([])
 
         with gr.Row():
             with gr.Column():
@@ -991,6 +1001,9 @@ def build_visualization_tab():
             with gr.Accordion(loc.localize("viz-tab-class-recording-accordion-label"), open=False):
                 with gr.Row():
                     with gr.Column():
+                        with gr.Row():
+                            classes_select_all_btn = gr.Button("✓ All",   size="sm")
+                            classes_deselect_all_btn = gr.Button("✕ None", size="sm")
                         select_classes_checkboxgroup = gr.CheckboxGroup(
                             choices=[],
                             value=[],
@@ -1000,6 +1013,9 @@ def build_visualization_tab():
                             elem_classes="custom-checkbox-group",
                         )
                     with gr.Column():
+                        with gr.Row():
+                            recordings_select_all_btn = gr.Button("✓ All",   size="sm")
+                            recordings_deselect_all_btn = gr.Button("✕ None", size="sm")
                         select_recordings_checkboxgroup = gr.CheckboxGroup(
                             choices=[],
                             value=[],
@@ -1009,6 +1025,9 @@ def build_visualization_tab():
                             elem_classes="custom-checkbox-group",
                         )
                     with gr.Column():
+                        with gr.Row():
+                            sites_select_all_btn = gr.Button("✓ All",   size="sm")
+                            sites_deselect_all_btn = gr.Button("✕ None", size="sm")
                         select_sites_checkboxgroup = gr.CheckboxGroup(
                             choices=[],
                             value=[],
@@ -1243,7 +1262,9 @@ def build_visualization_tab():
                     processor_state,
                     class_thresholds_df,
                     threshold_json_select_btn,
-                    threshold_template_download_btn
+                    threshold_template_download_btn,
+                    classes_full_list_state,        # NEW
+                    recordings_full_list_state      # NEW
                 ],
             ).success(
                 fn=update_datetime_defaults,
@@ -1259,7 +1280,7 @@ def build_visualization_tab():
             ).success(
                  fn=update_site_choices,
                  inputs=[processor_state],
-                 outputs=[select_sites_checkboxgroup]
+                 outputs=[select_sites_checkboxgroup, sites_full_list_state] # 2 outputs now
             )
 
         threshold_json_select_btn.click(
@@ -1346,8 +1367,8 @@ def build_visualization_tab():
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
-                metadata_columns["X"],
-                metadata_columns["Y"],
+                metadata_columns["X"],      # latitude-column dropdown
+                metadata_columns["Y"],      # longitude-column dropdown
                 correctness_mode,
             ],
             outputs=[processor_state, temporal_scatter_output]
@@ -1369,6 +1390,45 @@ def build_visualization_tab():
                 correctness_mode,
             ],
             outputs=[detections_table]
+        )
+
+        # ───────────  CLASSES  ───────────
+        classes_select_all_btn.click(
+            fn=lambda full: gr.update(value=full),
+            inputs=[classes_full_list_state],
+            outputs=[select_classes_checkboxgroup],
+            queue=False
+        )
+        classes_deselect_all_btn.click(
+            fn=lambda: gr.update(value=[]),
+            outputs=[select_classes_checkboxgroup],
+            queue=False
+        )
+
+        # ───────────  RECORDINGS  ───────────
+        recordings_select_all_btn.click(
+            fn=lambda full: gr.update(value=full),
+            inputs=[recordings_full_list_state],
+            outputs=[select_recordings_checkboxgroup],
+            queue=False
+        )
+        recordings_deselect_all_btn.click(
+            fn=lambda: gr.update(value=[]),
+            outputs=[select_recordings_checkboxgroup],
+            queue=False
+        )
+
+        # ───────────  SITES  ───────────
+        sites_select_all_btn.click(
+            fn=lambda full: gr.update(value=full),
+            inputs=[sites_full_list_state],
+            outputs=[select_sites_checkboxgroup],
+            queue=False
+        )
+        sites_deselect_all_btn.click(
+            fn=lambda: gr.update(value=[]),
+            outputs=[select_sites_checkboxgroup],
+            queue=False
         )
 
 
