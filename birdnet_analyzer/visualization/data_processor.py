@@ -380,79 +380,127 @@ class DataProcessor:
         except (ValueError, TypeError):
             return None
 
-    def set_metadata(self, metadata_df: pd.DataFrame,
-                     site_col: str = 'Site',
-                     lat_col: str = 'Latitude',
-                     lon_col: str = 'Longitude') -> None:
+    def set_metadata(
+        self,
+        metadata_df: pd.DataFrame,
+        site_col: str = "Site",
+        lat_col: str = "Latitude",
+        lon_col: str = "Longitude",
+) -> None:
         """
-        Sets and processes the metadata DataFrame, then re-processes the main data.
+        Validate, clean and attach site-level metadata (site ID ⇢ lat/lon) to
+        the processor, then re-run the internal data-processing pipeline.
+
+        Parameters
+        ----------
+        metadata_df : pd.DataFrame
+            Table that must contain at least the three columns given in
+            *site_col*, *lat_col* and *lon_col*.
+        site_col, lat_col, lon_col : str, default see signature
+            Column names for site ID, latitude and longitude respectively.
         """
+
+        # ── 0. Early-exit on empty ────────────────────────────────────────────────
         if metadata_df is None or metadata_df.empty:
             self.metadata_df = None
             print("Metadata is empty, clearing existing metadata.")
             self._process_data()
             return
 
-        required_meta_cols = {site_col, lat_col, lon_col}
-        missing_meta_cols = required_meta_cols - set(metadata_df.columns)
-        if missing_meta_cols:
-            raise ValueError(f"Missing required columns in metadata: {', '.join(missing_meta_cols)}")
+        # ── 1. Column checks ─────────────────────────────────────────────────────
+        required_cols = {site_col, lat_col, lon_col}
+        missing = required_cols.difference(metadata_df.columns)
+        if missing:
+            raise ValueError(
+                f"Missing required columns in metadata: {', '.join(sorted(missing))}"
+            )
 
+        # Work on a copy so we do not mutate the caller’s DataFrame
         meta = metadata_df.copy()
 
-        meta.rename(columns={site_col: 'site_name', lat_col: 'latitude', lon_col: 'longitude'}, inplace=True)
+        # ── 2. Standardise column names & dtypes ─────────────────────────────────
+        meta.rename(
+            columns={site_col: "site_name", lat_col: "latitude", lon_col: "longitude"},
+            inplace=True,
+        )
 
-        meta['latitude'] = meta['latitude'].apply(self._clean_coordinate)
-        meta['longitude'] = meta['longitude'].apply(self._clean_coordinate)
+        # ↳ keep ALL site IDs as canonical strings
+        meta["site_name"] = meta["site_name"].astype(str).str.strip()
 
-        invalid_lat = ~meta['latitude'].between(-90, 90, inclusive='both') & meta['latitude'].notna()
-        invalid_lon = ~meta['longitude'].between(-180, 180, inclusive='both') & meta['longitude'].notna()
-        if invalid_lat.any() or invalid_lon.any():
-            invalid_rows = meta[invalid_lat | invalid_lon]
-            error_msg = (f"Invalid coordinates found in metadata. Latitude must be [-90, 90], Longitude [-180, 180]. "
-                         f"Problematic rows:\n{invalid_rows[['site_name', 'latitude', 'longitude']].head().to_string(index=False)}")
-            gr.Error(error_msg)
-            print(f"ERROR: {error_msg}")
-            meta = meta[~(invalid_lat | invalid_lon)]
-            gr.Warning(f"Removed {len(invalid_rows)} rows with invalid coordinates from metadata.")
+        # ── 3. Coordinate cleanup / validation ───────────────────────────────────
+        meta["latitude"] = meta["latitude"].apply(self._clean_coordinate)
+        meta["longitude"] = meta["longitude"].apply(self._clean_coordinate)
 
-        meta['lat_round'] = meta['latitude'].round(6)
-        meta['lon_round'] = meta['longitude'].round(6)
-        duplicates = meta[meta.duplicated(subset=['site_name'], keep=False)].copy()
+        bad_lat = ~meta["latitude"].between(-90, 90, inclusive="both") & meta["latitude"].notna()
+        bad_lon = ~meta["longitude"].between(-180, 180, inclusive="both") & meta["longitude"].notna()
+        if bad_lat.any() or bad_lon.any():
+            bad_rows = meta[bad_lat | bad_lon]
+            err_msg = (
+                "Invalid coordinates found in metadata. "
+                "Latitude must be in [-90, 90] and longitude in [-180, 180].\n"
+                "Problematic rows:\n"
+                f"{bad_rows[['site_name', 'latitude', 'longitude']].head().to_string(index=False)}"
+            )
+            gr.Error(err_msg)
+            print(f"ERROR: {err_msg}")
+            meta = meta[~(bad_lat | bad_lon)]
+            gr.Warning(f"Removed {len(bad_rows)} rows with invalid coordinates from metadata.")
 
-        inconsistent_sites = []
-        if not duplicates.empty:
-            for site, group in duplicates.groupby('site_name'):
-                if group[['lat_round', 'lon_round']].drop_duplicates().shape[0] > 1:
-                    coords = group[['latitude', 'longitude']].drop_duplicates()
-                    coord_strs = [f"({row['latitude']:.4f}, {row['longitude']:.4f})" for _, row in coords.iterrows()]
-                    inconsistent_sites.append((site, coord_strs))
+        # ── 4. Duplicate / inconsistent site IDs ─────────────────────────────────
+        meta["lat_round"] = meta["latitude"].round(6)
+        meta["lon_round"] = meta["longitude"].round(6)
+
+        dups = meta[meta.duplicated(subset=["site_name"], keep=False)]
+        inconsistent_sites: list[tuple[str, list[str]]] = []
+
+        if not dups.empty:
+            for site, grp in dups.groupby("site_name"):
+                if grp[["lat_round", "lon_round"]].drop_duplicates().shape[0] > 1:
+                    coords = grp[["latitude", "longitude"]].drop_duplicates()
+                    coord_strs = [
+                        f"({row['latitude']:.4f}, {row['longitude']:.4f})"
+                        for _, row in coords.iterrows()
+                    ]
+                    inconsistent_sites.append((str(site), coord_strs))
 
         if inconsistent_sites:
-            error_msg = "Found duplicate site IDs with different coordinates in metadata:\n"
-            for site, coords in inconsistent_sites:
-                error_msg += f"- Site '{site}' maps to: {', '.join(coords)}\n"
-            error_msg += "Please correct the metadata file."
-            gr.Error(error_msg)
-            print(f"ERROR: {error_msg}")
+            msg = "Found duplicate site IDs with different coordinates in metadata:\n"
+            for site, coord_list in inconsistent_sites:
+                msg += f"  – Site '{site}' maps to: {', '.join(coord_list)}\n"
+            msg += "Please correct the metadata file."
+            gr.Error(msg)
+            print(f"ERROR: {msg}")
             return
 
-        if meta.duplicated(subset=['site_name'], keep=False).any():
-            num_dupes = meta.duplicated(subset=['site_name'], keep=False).sum()
-            meta = meta.drop_duplicates(subset=['site_name'], keep='first')
-            print(f"Removed {num_dupes} duplicate metadata entries for sites with identical coordinates.")
+        # keep only the first row for exact duplicates (same coords)
+        if meta.duplicated(subset=["site_name"], keep=False).any():
+            n_dupes = meta.duplicated(subset=["site_name"], keep=False).sum()
+            meta = meta.drop_duplicates(subset=["site_name"], keep="first")
+            print(f"Removed {n_dupes} duplicate metadata entries for identical coordinates.")
 
-        missing_coords = meta['latitude'].isna() | meta['longitude'].isna()
-        if missing_coords.any():
-            num_missing = missing_coords.sum()
-            sample_missing = meta.loc[missing_coords, 'site_name'].unique()[:5]
-            print(f"Warning: {num_missing} sites in metadata have missing/invalid coordinates (e.g., '{', '.join(sample_missing)}') and will be excluded from spatial analysis.")
-            meta = meta.dropna(subset=['latitude', 'longitude'])
+        # ── 5. Drop sites without coordinates ────────────────────────────────────
+        no_coord = meta["latitude"].isna() | meta["longitude"].isna()
+        if no_coord.any():
+            n_missing = int(no_coord.sum())
+            sample_missing = meta.loc[no_coord, "site_name"].unique()[:5]
+            print(
+                "Warning: "
+                f"{n_missing} sites in metadata have missing/invalid coordinates "
+                f"(e.g., '{', '.join(map(str, sample_missing))}') and will be "
+                "excluded from spatial analysis."
+            )
+            meta = meta.dropna(subset=["latitude", "longitude"])
 
-        self.metadata_df = meta[['site_name', 'latitude', 'longitude']].copy()
-        print(f"Successfully processed metadata for {len(self.metadata_df)} unique sites with valid coordinates.")
+        # ── 6. Persist & re-process main predictions ─────────────────────────────
+        self.metadata_df = meta[["site_name", "latitude", "longitude"]].copy()
+        print(
+            f"Successfully processed metadata for "
+            f"{len(self.metadata_df)} unique sites with valid coordinates."
+        )
 
+        # Re-run processing so that predictions gain lat/lon/site info
         self._process_data()
+
 
     def get_column_name(self, field_name: str) -> str:
         """
