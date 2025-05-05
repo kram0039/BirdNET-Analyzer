@@ -8,6 +8,7 @@ from pathlib import Path
 import datetime
 import traceback
 import hashlib
+import warnings
 
 import gradio as gr
 import pandas as pd
@@ -277,76 +278,69 @@ def build_visualization_tab():
         if uploaded_files:
             for file_obj in uploaded_files:
                 file_path = str(file_obj)
-                print(f"Attempting to read metadata from: {file_path}")
+                print(f"Attempting to read metadata headers from: {file_path}")
 
                 try:
-                    if file_path.lower().endswith('.xlsx'):
-                        try:
-                            df = pd.read_excel(file_path, sheet_name=0, nrows=0)
-                            print(f"Successfully read Excel headers: {list(df.columns)}")
-                            cols.update(df.columns)
-                            continue
-                        except Exception as e:
-                            print(f"Error reading Excel file: {e}")
+                    with warnings.catch_warnings():
+                        # Filter specific pandas warning about mixed types in empty/header read
+                        warnings.filterwarnings(
+                            "ignore",
+                            message="Columns \\(.*\\) have mixed types.*",
+                            category=pd.errors.DtypeWarning
+                        )
+                        warnings.filterwarnings(
+                            "ignore",
+                            message="Columns \\(.*\\) have mixed types.*",
+                            category=UserWarning # Sometimes it's a UserWarning
+                        )
 
-                    try:
-                        df = pd.read_csv(file_path, sep=';', encoding='latin1', nrows=1)
-                        if len(df.columns) > 1:
-                            print(f"Successfully read with semicolon delimiter: {list(df.columns)}")
-                            cols.update(df.columns)
-                            continue
-                        else:
-                            print("Only got one column with semicolon delimiter, trying other options")
-                    except Exception as e:
-                        print(f"Failed with semicolon delimiter: {e}")
-
-                    encodings = ['utf-8', 'latin1', 'ISO-8859-1', 'cp1252']
-                    for encoding in encodings:
-                        try:
-                            df = pd.read_csv(file_path, sep=',', encoding=encoding, nrows=1)
-                            if len(df.columns) > 1:
-                                print(f"Successfully read with comma delimiter and {encoding} encoding: {list(df.columns)}")
+                        if file_path.lower().endswith('.xlsx'):
+                            try:
+                                # Try reading Excel first if applicable
+                                df = pd.read_excel(file_path, sheet_name=0, nrows=0)
+                                print(f"Successfully read Excel headers: {list(df.columns)}")
                                 cols.update(df.columns)
-                                break
-                        except Exception as e:
-                            print(f"Failed with comma and {encoding}: {e}")
+                                continue # Move to the next file
+                            except Exception as e_excel:
+                                print(f"Reading as Excel failed: {e_excel}. Will try CSV.")
+                                # Fall through to CSV reading if Excel fails
 
-                    if df is not None and len(df.columns) > 1:
-                        continue
-
-                    try:
-                        df = pd.read_csv(file_path, sep=None, engine='python', nrows=1)
-                        print(f"Successfully read with Python auto-detection: {list(df.columns)}")
-                        cols.update(df.columns)
-                    except Exception as e:
-                        print(f"Python auto-detection failed: {e}")
-
+                        # Try reading as CSV with auto-detection
                         try:
-                            with open(file_path, 'r', encoding='latin1') as f:
-                                header_line = f.readline().strip()
-
-                            if ';' in header_line:
-                                headers = header_line.split(';')
-                                print(f"Manual semicolon split found {len(headers)} headers")
-                                cols.update([h.strip('"\'') for h in headers])
-                            elif ',' in header_line:
-                                headers = header_line.split(',')
-                                print(f"Manual comma split found {len(headers)} headers")
-                                cols.update([h.strip('"\'') for h in headers])
-                        except Exception as e:
-                            print(f"Manual reading failed: {e}")
+                            df = pd.read_csv(file_path, sep=None, engine='python', nrows=0)
+                            print(f"Successfully read CSV/TSV headers with auto-detect: {list(df.columns)}")
+                            cols.update(df.columns)
+                        except UnicodeDecodeError as e_unicode:
+                            print(f"Auto-detect CSV failed with UnicodeDecodeError: {e_unicode}. Trying latin1.")
+                            try:
+                                # Fallback encoding if auto-detect fails due to encoding
+                                df = pd.read_csv(file_path, sep=None, engine='python', encoding='latin1', nrows=0)
+                                print(f"Successfully read CSV/TSV headers with latin1 fallback: {list(df.columns)}")
+                                cols.update(df.columns)
+                            except Exception as e_fallback:
+                                print(f"CSV reading with latin1 fallback also failed: {e_fallback}")
+                                gr.Warning(f"Could not read headers from {os.path.basename(file_path)} using common methods.")
+                        except Exception as e_csv:
+                            print(f"General CSV reading failed: {e_csv}")
+                            # If it's not an Excel file and CSV reading fails, warn the user.
+                            if not file_path.lower().endswith('.xlsx'):
+                                gr.Warning(f"Could not read headers from {os.path.basename(file_path)} as CSV/TSV.")
 
                 except Exception as e:
-                    print(f"Error reading headers from {file_path}: {e}")
-                    gr.Warning(f"{loc.localize('eval-tab-warning-error-reading-file')} {file_path}")
+                    print(f"Error processing file {file_path}: {e}")
+                    gr.Warning(f"{loc.localize('eval-tab-warning-error-reading-file')} {os.path.basename(file_path)}")
 
-        cols = [""] + sorted(list(cols))
-        print(f"Final columns found: {cols}")
+        # Remove empty strings or None that might sneak in
+        final_cols = sorted([col for col in cols if col and pd.notna(col)])
+        print(f"Final unique columns found: {final_cols}")
+
         updates = []
+        choices_with_empty = [""] + final_cols
         for label in ["Site", "X", "Y"]:
             default_val = metadata_default_columns.get(label)
-            val = default_val if default_val in cols else None
-            updates.append(gr.update(choices=cols, value=val))
+            # Use the default if it exists in the found columns, otherwise None (which maps to the empty choice)
+            val = default_val if default_val in final_cols else None
+            updates.append(gr.update(choices=choices_with_empty, value=val))
         return updates
 
     def update_selections(
