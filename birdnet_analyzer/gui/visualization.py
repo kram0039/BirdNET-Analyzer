@@ -7,6 +7,7 @@ import io
 from pathlib import Path
 import datetime
 import traceback
+import hashlib
 
 import gradio as gr
 import pandas as pd
@@ -51,6 +52,9 @@ def build_visualization_tab():
     have been removed.
     """
 
+    _prediction_file_cache = {"hash": None, "temp_dir": None}
+    _metadata_file_cache = {"hash": None, "temp_dir": None}
+
     prediction_default_columns = {
         "Start Time": "File Offset (s)",
         "Class": "Common Name",
@@ -77,6 +81,81 @@ def build_visualization_tab():
     }
 
     MAX_DEFAULT_CLASSES = 5  # Define the class limit
+
+    def ensure_tmp_dir(file_paths, cache, prefix="birdnet_"):
+        if not file_paths:
+            if cache["temp_dir"] and Path(cache["temp_dir"]).exists():
+                print(f"No files selected, removing old temp dir: {cache['temp_dir']}")
+                shutil.rmtree(cache["temp_dir"], ignore_errors=True)
+            cache["hash"] = None
+            cache["temp_dir"] = None
+            return None
+
+        valid_paths = []
+        errors = []
+        for f in file_paths:
+            try:
+                p = Path(f)
+                if p.is_file():
+                    valid_paths.append(p)
+                else:
+                    errors.append(f"Path is not a file: {f}")
+            except Exception as e:
+                errors.append(f"Error accessing path {f}: {e}")
+
+        if errors:
+            print("Warnings accessing file paths:", errors)
+
+        if not valid_paths:
+            if cache["temp_dir"] and Path(cache["temp_dir"]).exists():
+                print(f"No valid files found, removing old temp dir: {cache['temp_dir']}")
+                shutil.rmtree(cache["temp_dir"], ignore_errors=True)
+            cache["hash"] = None
+            cache["temp_dir"] = None
+            gr.Warning("No valid files found in selection.")
+            return None
+
+        try:
+            sorted_paths = sorted(valid_paths, key=lambda p: str(p.resolve()))
+            mtimes = tuple(p.stat().st_mtime for p in sorted_paths)
+            path_strings = tuple(str(p.resolve()) for p in sorted_paths)
+            hash_content = str((mtimes, path_strings)).encode()
+            current_hash = hashlib.sha256(hash_content).hexdigest()
+        except FileNotFoundError as e:
+            print(f"Error accessing file stats for hashing: {e}. Clearing cache.")
+            if cache["temp_dir"] and Path(cache["temp_dir"]).exists():
+                shutil.rmtree(cache["temp_dir"], ignore_errors=True)
+            cache["hash"] = None
+            cache["temp_dir"] = None
+            raise gr.Error(f"Error accessing file: {e}. Please check file paths.")
+
+        if current_hash == cache["hash"] and cache["temp_dir"] and Path(cache["temp_dir"]).exists():
+            print(f"Cache hit for {prefix[:-1]} files. Reusing temp dir: {cache['temp_dir']}")
+            return cache["temp_dir"]
+
+        if cache["temp_dir"] and Path(cache["temp_dir"]).exists():
+            print(f"Cache miss or invalid temp dir. Removing old temp dir: {cache['temp_dir']}")
+            shutil.rmtree(cache["temp_dir"], ignore_errors=True)
+
+        new_temp_dir = tempfile.mkdtemp(prefix=prefix)
+        print(f"Created new temp dir: {new_temp_dir}")
+
+        try:
+            for src_path in valid_paths:
+                dest_path = Path(new_temp_dir) / src_path.name
+                shutil.copy2(src_path, dest_path)
+            print(f"Copied {len(valid_paths)} files to {new_temp_dir}")
+        except Exception as e:
+            print(f"Error copying files to temp dir {new_temp_dir}: {e}")
+            shutil.rmtree(new_temp_dir, ignore_errors=True)
+            cache["hash"] = None
+            cache["temp_dir"] = None
+            raise gr.Error(f"Failed to copy files to temporary location: {e}")
+
+        cache["hash"] = current_hash
+        cache["temp_dir"] = new_temp_dir
+
+        return new_temp_dir
 
     def get_columns_from_uploaded_files(files):
         columns = set()
@@ -113,7 +192,7 @@ def build_visualization_tab():
 
         try:
             if prediction_dir is None:
-                prediction_dir = save_uploaded_files(prediction_files)
+                prediction_dir = ensure_tmp_dir(prediction_files, _prediction_file_cache, prefix="birdnet_pred_")
 
             print(f"\nProcessing {len(prediction_files)} prediction files")
             print(f"Using prediction directory: {prediction_dir}")
@@ -144,24 +223,19 @@ def build_visualization_tab():
             print(f"\nLoaded DataFrame shape: {df.shape}")
             print(f"DataFrame columns: {df.columns}")
 
-            # Check for duplicate 'Recording' column before accessing
             if isinstance(df.columns, pd.MultiIndex):
                 raise gr.Error("DataFrame has a MultiIndex, which is not supported.")
             if 'Recording' not in df.columns:
                 raise gr.Error("The processed DataFrame is missing the 'Recording' column.")
 
-            # Explicitly handle potential duplicate columns when selecting for .unique()
             recording_col_data = df['Recording']
             if isinstance(recording_col_data, pd.DataFrame):
                 print("Warning: Duplicate 'Recording' columns found. Using the first instance.")
-                # Select the first column named 'Recording' if duplicates exist
                 recording_col_data = df.loc[:, 'Recording'].iloc[:, 0]
 
-            # Now apply dropna and unique to the Series
             recordings = recording_col_data.dropna().astype(str).unique()
-            recordings = sorted([rec for rec in recordings if rec])  # Ensure strings and remove empty
+            recordings = sorted([rec for rec in recordings if rec])
 
-            # Similarly for 'Class'
             if 'Class' not in df.columns:
                 raise gr.Error("The processed DataFrame is missing the 'Class' column.")
 
@@ -171,7 +245,7 @@ def build_visualization_tab():
                 class_col_data = df.loc[:, 'Class'].iloc[:, 0]
 
             classes = class_col_data.dropna().astype(str).unique()
-            classes = sorted([cls for cls in classes if cls])  # Ensure strings and remove empty
+            classes = sorted([cls for cls in classes if cls])
 
             print(f"Found {len(classes)} unique classes")
 
@@ -181,11 +255,11 @@ def build_visualization_tab():
 
         except ValueError as e:
             print(f"Error in initialize_processor: {str(e)}")
-            traceback.print_exc()  # Print full traceback for debugging
+            traceback.print_exc()
             raise gr.Error(f"Error initializing processor: {str(e)}")
         except Exception as e:
             print(f"Unexpected error in initialize_processor: {str(e)}")
-            traceback.print_exc()  # Print full traceback for debugging
+            traceback.print_exc()
             raise gr.Error(f"An unexpected error occurred: {str(e)}")
 
     def update_prediction_columns(uploaded_files):
@@ -289,8 +363,8 @@ def build_visualization_tab():
         current_classes,
         current_recordings,
     ):
-        prediction_dir = save_uploaded_files(prediction_files)
-        metadata_dir = save_uploaded_files(metadata_files)
+        prediction_dir = ensure_tmp_dir(prediction_files, _prediction_file_cache, prefix="birdnet_pred_")
+        metadata_dir = ensure_tmp_dir(metadata_files, _metadata_file_cache, prefix="birdnet_meta_")
 
         avail_classes, avail_recordings, proc, prediction_dir = initialize_processor(
             prediction_files,
@@ -302,12 +376,11 @@ def build_visualization_tab():
             prediction_dir,
         )
 
-        # 2) NEW ► attach the metadata if everything is available ──────────────
         if (
-            proc                                           # processor exists
-            and metadata_files                             # user chose meta files
-            and metadata_dir                               # metadata directory exists
-            and meta_site and meta_x and meta_y            # user mapped the columns
+            proc                                          
+            and metadata_files                             
+            and metadata_dir                               
+            and meta_site and meta_x and meta_y            
         ):
             try:
                 meta_path = Path(metadata_dir)
@@ -324,15 +397,12 @@ def build_visualization_tab():
                             print(f"UTF-8 read failed for {first_meta_file}, trying latin1: {e_utf8}")
                             meta_df = pd.read_csv(first_meta_file, sep=None, engine="python", encoding='latin1')
 
-                    # let DataProcessor validate / clean the table
                     proc.set_metadata(meta_df, site_col=meta_site, lat_col=meta_x, lon_col=meta_y)
                     print("Metadata loaded early into processor.")
                 else:
                     print("Metadata files selected, but no CSV/XLSX found in the directory for early loading.")
             except Exception as e:
                 print(f"Error loading metadata early in update_selections: {e}")
-                # Optional: Raise a gr.Warning or just log the error
-                # gr.Warning(f"Could not load metadata during initial setup: {e}")
 
         class_thresholds_init_df = None
         threshold_df_update = gr.update(visible=False, value=None)
@@ -360,7 +430,6 @@ def build_visualization_tab():
         new_classes = []
         new_recordings = []
 
-        # Determine default classes based on limit
         default_classes = avail_classes
         if len(avail_classes) > MAX_DEFAULT_CLASSES:
             default_classes = avail_classes[:MAX_DEFAULT_CLASSES]
@@ -375,22 +444,20 @@ def build_visualization_tab():
             normalized_current = [str(r).strip() for r in current_recordings if isinstance(r, str)]
             new_recordings = [r for r in normalized_current if r in avail_recordings]
 
-        # If no valid current classes or initially empty, use the default set
         if not new_classes:
             new_classes = default_classes
-        # If no valid current recordings or initially empty, select all available
         if not new_recordings:
             new_recordings = avail_recordings
 
         return (
-            gr.update(choices=avail_classes, value=new_classes),  # Keep all choices available
+            gr.update(choices=avail_classes, value=new_classes),
             gr.update(choices=avail_recordings, value=new_recordings),
             state,
             threshold_df_update,
             threshold_json_btn_update,
             threshold_download_btn_update,
-            avail_classes,          # NEW – goes to classes_full_list_state
-            avail_recordings        # NEW – goes to recordings_full_list_state
+            avail_classes,          
+            avail_recordings        
         )
 
     def update_datetime_defaults(processor_state):
@@ -411,15 +478,12 @@ def build_visualization_tab():
 
     def update_site_choices(proc_state: ProcessorState):
         if not proc_state or not proc_state.processor or proc_state.processor.complete_df.empty:
-            # return both the UI update *and* the raw list (empty)
             return (gr.update(choices=[], value=[]), [])
 
         if 'Site' in proc_state.processor.complete_df.columns:
             sites = sorted(proc_state.processor.complete_df['Site'].dropna().unique())
-            # return both the UI update *and* the raw list
             return (gr.update(choices=sites, value=sites), sites)
         else:
-            # return both the UI update *and* the raw list (empty)
             return (gr.update(choices=[],   value=[]),   [])
 
     def combine_time_components(hour, minute) -> typing.Optional[datetime.time]:
@@ -828,12 +892,10 @@ def build_visualization_tab():
             raise gr.Error(f"Error filtering data: {str(e)}")
 
         if filtered_df.empty:
-            # Return an empty DataFrame wrapped in gr.update to clear the table
             return gr.update(value=pd.DataFrame(columns=["Species", "Count", "Percentage"]), visible=True)
 
         try:
             counts_df = calculate_detection_counts(filtered_df)
-            # Return the calculated DataFrame wrapped in gr.update
             return gr.update(value=counts_df, visible=True)
         except Exception as e:
             print(f"Error calculating detection counts: {e}")
@@ -845,37 +907,16 @@ def build_visualization_tab():
         patterns = ("*.txt", "*.csv", "*.tsv", "*.xlsx"),
         recursive = True,
     ):
-        """
-        Collect all prediction-table files under *directory*.
-
-        Parameters
-        ----------
-        directory : str | pathlib.Path
-            Root folder that the user selected in the GUI.
-        patterns  : iterable of str, default ("*.txt", "*.csv", "*.tsv", "*.xlsx")
-            Shell-style glob patterns to match (case-insensitive).
-            Adjust if you need a tighter filter.
-        recursive : bool, default True
-            • True  → walk the entire directory tree with Path.rglob  
-            • False → only look at files directly inside *directory*
-
-        Returns
-        -------
-        list[pathlib.Path]
-            Sorted list of matching files.
-        """
         root = Path(directory).expanduser().resolve()
         if not root.exists():
             raise FileNotFoundError(root)
 
-        # Use rglob for deep search, glob for single level
         gather = root.rglob if recursive else root.glob
 
         files: list[Path] = []
         for pattern in patterns:
             files.extend(gather(pattern))
 
-        # Sort for consistent order (relative paths for readability)
         return sorted(files, key=lambda p: p.as_posix().lower())
 
     def download_threshold_template(proc_state: ProcessorState):
@@ -990,8 +1031,6 @@ def build_visualization_tab():
         processor_state = gr.State()
         prediction_files_state = gr.State()
         metadata_files_state = gr.State()
-        # NEW ─ keeps a copy of the *full* choice lists so the
-        #       “Select-All / Deselect-All” buttons know what to do
         classes_full_list_state     = gr.State([])
         recordings_full_list_state  = gr.State([])
         sites_full_list_state       = gr.State([])
@@ -1182,7 +1221,6 @@ def build_visualization_tab():
             loc.localize("viz-tab-plot-time-distribution-button-label"),
             variant="huggingface"
         )
-        # Options for this plot in an Accordion
         with gr.Accordion(loc.localize("viz-tab-time-distribution-options-label"), open=False):
              with gr.Row():
                 time_distribution_period = gr.Dropdown(
@@ -1296,8 +1334,8 @@ def build_visualization_tab():
                     class_thresholds_df,
                     threshold_json_select_btn,
                     threshold_template_download_btn,
-                    classes_full_list_state,        # NEW
-                    recordings_full_list_state      # NEW
+                    classes_full_list_state,        
+                    recordings_full_list_state      
                 ],
             ).success(
                 fn=update_datetime_defaults,
@@ -1313,7 +1351,7 @@ def build_visualization_tab():
             ).success(
                  fn=update_site_choices,
                  inputs=[processor_state],
-                 outputs=[select_sites_checkboxgroup, sites_full_list_state] # 2 outputs now
+                 outputs=[select_sites_checkboxgroup, sites_full_list_state]
             )
 
         threshold_json_select_btn.click(
@@ -1400,8 +1438,8 @@ def build_visualization_tab():
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
-                metadata_columns["X"],      # latitude-column dropdown
-                metadata_columns["Y"],      # longitude-column dropdown
+                metadata_columns["X"],
+                metadata_columns["Y"],
                 correctness_mode,
             ],
             outputs=[processor_state, temporal_scatter_output]
@@ -1425,7 +1463,6 @@ def build_visualization_tab():
             outputs=[detections_table]
         )
 
-        # ───────────  CLASSES  ───────────
         classes_select_all_btn.click(
             fn=lambda full: gr.update(value=full),
             inputs=[classes_full_list_state],
@@ -1438,7 +1475,6 @@ def build_visualization_tab():
             queue=False
         )
 
-        # ───────────  RECORDINGS  ───────────
         recordings_select_all_btn.click(
             fn=lambda full: gr.update(value=full),
             inputs=[recordings_full_list_state],
@@ -1451,7 +1487,6 @@ def build_visualization_tab():
             queue=False
         )
 
-        # ───────────  SITES  ───────────
         sites_select_all_btn.click(
             fn=lambda full: gr.update(value=full),
             inputs=[sites_full_list_state],
