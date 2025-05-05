@@ -552,6 +552,46 @@ class DataProcessor:
         # Re-run processing so that predictions gain lat/lon/site info
         self._process_data()
 
+        # ──────────────────────────────────────────────────────────────
+        # NEW ▶ warn about recordings without a matched site
+        # ──────────────────────────────────────────────────────────────
+        try:
+            df = self.complete_df
+            if (
+                df is not None
+                and not df.empty
+                and "Recording" in df.columns
+                and "Site"      in df.columns
+            ):
+                mask_no_site = df["Site"].isna()
+                if mask_no_site.any():
+                    missing_recs = (
+                        df.loc[mask_no_site, "Recording"]
+                        .dropna()
+                        .astype(str)
+                        .unique()
+                    )
+                    if len(missing_recs) > 0:
+                        num_missing = len(missing_recs)
+                        if num_missing > 10:
+                            display_recs = missing_recs[:10]
+                            rec_list = "\n".join(display_recs)
+                            warning_message = (
+                                f"No site could be matched for {num_missing} recording(s).\n"
+                                f"Showing the first 10:\n{rec_list}\n"
+                                f"... (and {num_missing - 10} more)"
+                            )
+                        else:
+                            rec_list = "\n".join(missing_recs)
+                            warning_message = (
+                                f"No site could be matched for {num_missing} recording(s):\n{rec_list}"
+                            )
+                        gr.Warning(warning_message)
+        except Exception as exc:  # keep GUI alive if something goes wrong
+            print(
+                "WARNING-handler for unmatched sites failed:\n",
+                repr(exc)
+            )
 
     def get_column_name(self, field_name: str) -> str:
         """
