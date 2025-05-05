@@ -5,6 +5,7 @@ Contains shared types and functions to avoid circular imports.
 
 import typing
 import datetime
+from dataclasses import dataclass
 import pandas as pd
 import gradio as gr
 
@@ -12,11 +13,12 @@ import gradio as gr
 if typing.TYPE_CHECKING:
     from birdnet_analyzer.visualization.data_processor import DataProcessor
 
-class ProcessorState(typing.NamedTuple):
+@dataclass
+class ProcessorState:
     """State of the DataProcessor."""
     processor: 'DataProcessor'  # Use string literal
     prediction_dir: str
-    metadata_dir: str
+    metadata_dir: typing.Optional[str] = None
     color_map: typing.Optional[typing.Dict[str, str]] = None
     class_thresholds: typing.Optional[pd.DataFrame] = None
 

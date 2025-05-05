@@ -539,6 +539,7 @@ def build_visualization_tab():
 
         try:
             fig_hist = plotter.plot_histogram_plotly(title="Histogram of Confidence Scores by Class")
+            # No need to create a new state, just return the existing one
             return [proc_state, gr.update(visible=True, value=fig_hist)]
         except Exception as e:
             print(f"Error creating confidence plot: {e}")
@@ -640,15 +641,10 @@ def build_visualization_tab():
                 print(f"Error adding sunrise/sunset lines: {str(e)}")
                 traceback.print_exc()
 
-            new_state = ProcessorState(
-                processor=proc_state.processor,
-                prediction_dir=proc_state.prediction_dir,
-                metadata_dir=proc_state.metadata_dir,
-                color_map=plotter.color_map,
-                class_thresholds=thresholds_df
-            )
+            # Update the color map in the existing state instead of creating a new state
+            proc_state.color_map = plotter.color_map
 
-            return [new_state, gr.update(value=fig, visible=True)]
+            return [proc_state, gr.update(value=fig, visible=True)]
 
         except Exception as e:
             print(f"Error creating temporal scatter plot: {str(e)}")
@@ -761,15 +757,10 @@ def build_visualization_tab():
                 title="Spatial Distribution of Predictions by Class"
             )
 
-            new_state = ProcessorState(
-                processor=processor,
-                prediction_dir=proc_state.prediction_dir,
-                metadata_dir=proc_state.metadata_dir,
-                color_map=plotter.color_map,
-                class_thresholds=thresholds_df
-            )
+            # Update the color map in the existing state instead of creating a new state
+            proc_state.color_map = plotter.color_map
 
-            return [new_state, gr.update(value=fig, visible=True)]
+            return [proc_state, gr.update(value=fig, visible=True)]
         except Exception as e:
             print(f"Error creating map: {str(e)}")
             traceback.print_exc()
@@ -962,6 +953,7 @@ def build_visualization_tab():
                 gr.Warning("Class thresholds not initialized. Cannot update.")
                 return proc_state, gr.update()
 
+            # Modify the existing thresholds DataFrame in-place
             updated_thresholds_df = proc_state.class_thresholds.copy()
             updated_thresholds_df.set_index('Class', inplace=True)
 
@@ -992,16 +984,11 @@ def build_visualization_tab():
             if warning_messages:
                 gr.Warning("\n".join(warning_messages))
 
-            new_state = ProcessorState(
-                processor=proc_state.processor,
-                prediction_dir=proc_state.prediction_dir,
-                metadata_dir=proc_state.metadata_dir,
-                color_map=proc_state.color_map,
-                class_thresholds=updated_thresholds_df
-            )
+            # Update the state's class_thresholds in-place instead of creating a new state
+            proc_state.class_thresholds = updated_thresholds_df
 
             gr.Info(f"Successfully loaded thresholds for {loaded_count} classes from JSON.")
-            return new_state, gr.update(value=updated_thresholds_df)
+            return proc_state, gr.update(value=updated_thresholds_df)
 
         except Exception as e:
             print(f"Error loading thresholds from JSON: {e}")
@@ -1420,7 +1407,7 @@ def build_visualization_tab():
         plot_temporal_scatter_btn.click(
             fn=plot_temporal_scatter,
             inputs=[
-                processor_state,
+                processor_state, 
                 select_classes_checkboxgroup,
                 select_recordings_checkboxgroup,
                 select_sites_checkboxgroup,
@@ -1432,7 +1419,7 @@ def build_visualization_tab():
                 time_end_minute,
                 metadata_columns["X"],
                 metadata_columns["Y"],
-                correctness_mode,
+                correctness_mode
             ],
             outputs=[processor_state, temporal_scatter_output]
         )
