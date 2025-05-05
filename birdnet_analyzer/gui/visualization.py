@@ -632,9 +632,6 @@ def build_visualization_tab():
         selected_classes_list,
         selected_recordings_list,
         selected_sites_list,
-        meta_x,
-        meta_y,
-        meta_site,
         date_range_start,
         date_range_end,
         time_start_hour,
@@ -645,8 +642,8 @@ def build_visualization_tab():
     ):
         if not proc_state or not proc_state.processor:
             raise gr.Error("Please load predictions first")
-        if not proc_state.metadata_dir:
-             raise gr.Error("Metadata directory not set. Please select metadata files.")
+        if proc_state.processor.metadata_df is None or proc_state.processor.metadata_df.empty:
+             raise gr.Error("Metadata has not been loaded or is empty. Ensure metadata files and columns are selected correctly.")
 
         processor = proc_state.processor
         thresholds_df = proc_state.class_thresholds
@@ -655,34 +652,11 @@ def build_visualization_tab():
             raise gr.Error("Class thresholds not initialized. Load data first.")
 
         try:
-            meta_dir = Path(proc_state.metadata_dir)
-            meta_files = list(meta_dir.glob("*.csv")) + list(meta_dir.glob("*.xlsx"))
-            if not meta_files:
-                raise gr.Error("No metadata CSV or XLSX files found in the specified directory.")
-
-            first_meta_file = meta_files[0]
-            print(f"Loading metadata from: {first_meta_file}")
-            if str(first_meta_file).lower().endswith('.xlsx'):
-                metadata_df = pd.read_excel(first_meta_file, sheet_name=0)
-            else:
-                 try:
-                      metadata_df = pd.read_csv(first_meta_file, sep=None, engine='python', encoding='utf-8-sig')
-                 except Exception as e_utf8:
-                      print(f"Metadata read failed with utf-8-sig ({e_utf8}), trying latin1...")
-                      try:
-                           metadata_df = pd.read_csv(first_meta_file, sep=None, engine='python', encoding='latin1')
-                      except Exception as e_latin1:
-                           raise gr.Error(f"Failed to read metadata file '{first_meta_file.name}' with common encodings: {e_latin1}")
-
-            if meta_site not in metadata_df.columns: raise gr.Error(f"Metadata site column '{meta_site}' not found.")
-            if meta_x not in metadata_df.columns: raise gr.Error(f"Metadata latitude column '{meta_x}' not found.")
-            if meta_y not in metadata_df.columns: raise gr.Error(f"Metadata longitude column '{meta_y}' not found.")
-
-            processor.set_metadata(metadata_df, site_col=meta_site, lat_col=meta_x, lon_col=meta_y)
-            print("Metadata set in processor.")
+            if processor.metadata_df is None or 'latitude' not in processor.metadata_df.columns or 'longitude' not in processor.metadata_df.columns:
+                 raise gr.Error("Processed metadata (with Latitude/Longitude) not found on processor. Check metadata loading steps.")
 
             all_locations_df = processor.metadata_df[['site_name', 'latitude', 'longitude']].drop_duplicates().copy()
-            print(f"Found {len(all_locations_df)} unique locations in metadata.")
+            print(f"Found {len(all_locations_df)} unique locations in metadata for spatial plot.")
 
             time_start = combine_time_components(time_start_hour, time_start_minute)
             time_end = combine_time_components(time_end_hour, time_end_minute)
@@ -698,15 +672,21 @@ def build_visualization_tab():
                 correctness_mode=correctness_mode,
                 class_thresholds=thresholds_df,
             )
-            print(f"Filtered data shape: {filtered_df.shape}")
+            print(f"Filtered data shape for spatial plot: {filtered_df.shape}")
 
             if filtered_df.empty:
-                raise gr.Error("No data matches the selected filters")
+                gr.Warning("No data matches the selected filters for the spatial plot.")
+                empty_fig = go.Figure()
+                empty_fig.update_layout(title="Spatial Distribution (No Data)")
+                return [proc_state, gr.update(value=empty_fig, visible=True)]
 
             if 'Latitude' not in filtered_df.columns or 'Longitude' not in filtered_df.columns:
-                 raise gr.Error("Latitude/Longitude columns missing after filtering. Check metadata processing.")
+                 raise gr.Error("Latitude/Longitude columns missing after filtering. Check metadata processing and merging.")
             if filtered_df['Latitude'].isna().all() or filtered_df['Longitude'].isna().all():
-                 raise gr.Error("All Latitude/Longitude values are missing in the filtered data. Check site ID matching and metadata.")
+                 if all_locations_df.empty:
+                      raise gr.Error("Metadata loaded, but no valid coordinates found for any site.")
+                 else:
+                      raise gr.Error("All Latitude/Longitude values are missing in the filtered data. Check site ID matching in predictions or filter criteria.")
 
             class_col = "Class"
             site_col = "Site"
@@ -719,22 +699,20 @@ def build_visualization_tab():
             plotter = SpatialDistributionPlotter(class_col=class_col)
 
             if proc_state.color_map:
-                print("Using existing color map from state.")
+                print("Using existing color map from state for spatial plot.")
                 plotter.color_map = proc_state.color_map.copy()
             else:
                 filtered_classes = sorted(filtered_df[class_col].unique())
                 temp_plotter = TimeDistributionPlotter(data=filtered_df, class_col=class_col)
                 plotter.color_map = temp_plotter._get_color_map(filtered_classes)
-                print("Created new color map based on filtered data.")
+                print("Created new color map for spatial plot based on filtered data.")
+                proc_state.color_map = plotter.color_map
 
             fig = plotter.plot(
                 agg_df=agg_df,
                 all_locations_df=all_locations_df,
                 title="Spatial Distribution of Predictions by Class"
             )
-
-            # Update the color map in the existing state instead of creating a new state
-            proc_state.color_map = plotter.color_map
 
             return [proc_state, gr.update(value=fig, visible=True)]
         except Exception as e:
@@ -1346,9 +1324,6 @@ def build_visualization_tab():
                 select_classes_checkboxgroup,
                 select_recordings_checkboxgroup,
                 select_sites_checkboxgroup,
-                metadata_columns["X"],
-                metadata_columns["Y"],
-                metadata_columns["Site"],
                 date_range_start,
                 date_range_end,
                 time_start_hour,

@@ -558,14 +558,26 @@ class DataProcessor:
         )
 
         # Calculate and cache centroid if metadata is valid and non-empty
-        if not self.metadata_df.empty:
-            mean_lat = self.metadata_df['latitude'].mean()
-            mean_lon = self.metadata_df['longitude'].mean()
-            if pd.notna(mean_lat) and pd.notna(mean_lon):
-                self.metadata_centroid = (mean_lat, mean_lon)
-                print(f"Cached metadata centroid: ({mean_lat:.4f}, {mean_lon:.4f})")
-            else:
-                 print("Warning: Could not calculate metadata centroid (mean lat/lon is NaN).")
+        # Assumes self.metadata_df contains cleaned, numeric lat/lon at this point
+        if self.metadata_df is not None and not self.metadata_df.empty:
+            try:
+                mean_lat = self.metadata_df['latitude'].mean()
+                mean_lon = self.metadata_df['longitude'].mean()
+                if pd.notna(mean_lat) and pd.notna(mean_lon):
+                    # Basic check for valid range
+                    if -90 <= mean_lat <= 90 and -180 <= mean_lon <= 180:
+                        self.metadata_centroid = (mean_lat, mean_lon)
+                        print(f"Cached metadata centroid: ({mean_lat:.4f}, {mean_lon:.4f})")
+                    else:
+                        print(f"Warning: Calculated centroid ({mean_lat:.4f}, {mean_lon:.4f}) is outside valid geographic bounds. Centroid not cached.")
+                        self.metadata_centroid = None
+                else:
+                     print("Warning: Could not calculate metadata centroid (mean lat/lon is NaN).")
+                     self.metadata_centroid = None
+            except Exception as e:
+                 print(f"Error during centroid calculation: {e}. Centroid not cached.")
+                 self.metadata_centroid = None
+
 
         # Re-run processing so that predictions gain lat/lon/site info
         self._process_data()
