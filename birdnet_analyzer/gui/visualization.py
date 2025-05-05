@@ -221,31 +221,29 @@ def build_visualization_tab():
 
             df = proc.get_complete_data()
 
-            print(f"\nLoaded DataFrame shape: {df.shape}")
-            print(f"DataFrame columns: {df.columns}")
+            # Handle duplicate columns deterministically
+            if df.columns.has_duplicates:
+                original_columns = df.columns.tolist()
+                duplicated_indices = [i for i, dup in enumerate(df.columns.duplicated(keep='first')) if dup]
+                dropped_column_names_at_indices = [original_columns[i] for i in duplicated_indices]
+                df = df.loc[:, ~df.columns.duplicated(keep='first')]
+                if dropped_column_names_at_indices:
+                    # Use print as logger is not set up here
+                    print(f"Warning: Duplicate columns found in loaded data. Keeping first instance and removing others: {list(set(dropped_column_names_at_indices))}")
 
-            if isinstance(df.columns, pd.MultiIndex):
-                raise gr.Error("DataFrame has a MultiIndex, which is not supported.")
+
+            print(f"\nLoaded DataFrame shape after potential duplicate removal: {df.shape}")
+            print(f"DataFrame columns after potential duplicate removal: {df.columns.tolist()}")
             if 'Recording' not in df.columns:
                 raise gr.Error("The processed DataFrame is missing the 'Recording' column.")
 
-            recording_col_data = df['Recording']
-            if isinstance(recording_col_data, pd.DataFrame):
-                print("Warning: Duplicate 'Recording' columns found. Using the first instance.")
-                recording_col_data = df.loc[:, 'Recording'].iloc[:, 0]
-
-            recordings = recording_col_data.dropna().astype(str).unique()
+            recordings = df['Recording'].dropna().astype(str).unique()
             recordings = sorted([rec for rec in recordings if rec])
 
             if 'Class' not in df.columns:
                 raise gr.Error("The processed DataFrame is missing the 'Class' column.")
 
-            class_col_data = df['Class']
-            if isinstance(class_col_data, pd.DataFrame):
-                print("Warning: Duplicate 'Class' columns found. Using the first instance.")
-                class_col_data = df.loc[:, 'Class'].iloc[:, 0]
-
-            classes = class_col_data.dropna().astype(str).unique()
+            classes = df['Class'].dropna().astype(str).unique()
             classes = sorted([cls for cls in classes if cls])
 
             print(f"Found {len(classes)} unique classes")
