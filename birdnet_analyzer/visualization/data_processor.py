@@ -51,6 +51,16 @@ class DataProcessor:
     This class loads prediction files, merges optional metadata, creates derived
     columns (datetime parts, coordinates), and provides a method to filter
     the complete dataset based on various criteria.
+
+    Attributes:
+        prediction_directory_path (str): Path to the folder containing prediction files.
+        prediction_file_name (Optional[str]): Name of a single prediction file, if specified.
+        columns_predictions (Dict[str, str]): Column mappings for prediction files.
+        raw_predictions_df (pd.DataFrame): Raw data loaded from prediction files.
+        metadata_df (Optional[pd.DataFrame]): Processed and validated site metadata (site_name, latitude, longitude).
+        complete_df (pd.DataFrame): Fully processed, unfiltered data including merged metadata and derived columns.
+        classes (tuple[str]): Sorted tuple of unique class names found in the data.
+        metadata_centroid (Optional[Tuple[float, float]]): Mean latitude and longitude of sites in metadata_df, if available.
     """
 
     # Default column mappings for predictions
@@ -91,6 +101,7 @@ class DataProcessor:
         self.raw_predictions_df: pd.DataFrame = pd.DataFrame()  # Raw loaded data
         self.metadata_df: Optional[pd.DataFrame] = None  # Processed metadata
         self.complete_df: pd.DataFrame = pd.DataFrame()  # Fully processed, unfiltered data
+        self.metadata_centroid: Optional[Tuple[float, float]] = None # Cached mean coordinates
 
         self._validate_columns()
         self.load_data()
@@ -423,7 +434,8 @@ class DataProcessor:
 ) -> None:
         """
         Validate, clean and attach site-level metadata (site ID ⇢ lat/lon) to
-        the processor, then re-run the internal data-processing pipeline.
+        the processor, then re-run the internal data-processing pipeline and
+        calculate the metadata centroid.
 
         Parameters
         ----------
@@ -433,12 +445,14 @@ class DataProcessor:
         site_col, lat_col, lon_col : str, default see signature
             Column names for site ID, latitude and longitude respectively.
         """
+        # Clear previous centroid before processing new metadata
+        self.metadata_centroid = None
 
         # ── 0. Early-exit on empty ────────────────────────────────────────────────
         if metadata_df is None or metadata_df.empty:
             self.metadata_df = None
             print("Metadata is empty, clearing existing metadata.")
-            self._process_data()
+            self._process_data() # Re-process without metadata
             return
 
         # ── 1. Column checks ─────────────────────────────────────────────────────
@@ -542,6 +556,16 @@ class DataProcessor:
             f"Successfully processed metadata for "
             f"{len(self.metadata_df)} unique sites with valid coordinates."
         )
+
+        # Calculate and cache centroid if metadata is valid and non-empty
+        if not self.metadata_df.empty:
+            mean_lat = self.metadata_df['latitude'].mean()
+            mean_lon = self.metadata_df['longitude'].mean()
+            if pd.notna(mean_lat) and pd.notna(mean_lon):
+                self.metadata_centroid = (mean_lat, mean_lon)
+                print(f"Cached metadata centroid: ({mean_lat:.4f}, {mean_lon:.4f})")
+            else:
+                 print("Warning: Could not calculate metadata centroid (mean lat/lon is NaN).")
 
         # Re-run processing so that predictions gain lat/lon/site info
         self._process_data()

@@ -557,8 +557,6 @@ def build_visualization_tab():
         time_start_minute,
         time_end_hour,
         time_end_minute,
-        meta_x=None,
-        meta_y=None,
         correctness_mode="Ignore correctness flags"
     ):
         if not proc_state or not proc_state.processor:
@@ -566,9 +564,6 @@ def build_visualization_tab():
 
         processor = proc_state.processor
         thresholds_df = proc_state.class_thresholds
-
-        if thresholds_df is None:
-            raise gr.Error("Class thresholds not initialized. Load data first.")
 
         time_start = combine_time_components(time_start_hour, time_start_minute)
         time_end = combine_time_components(time_end_hour, time_end_minute)
@@ -591,7 +586,10 @@ def build_visualization_tab():
             raise gr.Error(f"Error filtering data: {str(e)}")
 
         if filtered_df.empty:
-            raise gr.Error("No data matches the selected filters")
+            gr.Warning("No data matches the selected filters. Plot will be empty.")
+            empty_fig = go.Figure()
+            empty_fig.update_layout(title="Temporal Distribution of Detections (No Data)")
+            return [proc_state, gr.update(value=empty_fig, visible=True)]
 
         col_class = "Class"
         conf_col = "Confidence"
@@ -605,44 +603,22 @@ def build_visualization_tab():
 
             fig = plotter.plot(title="Temporal Distribution of Detections")
 
-            try:
-                if 'Latitude' in filtered_df.columns and 'Longitude' in filtered_df.columns and \
-                   filtered_df['Latitude'].notna().any() and filtered_df['Longitude'].notna().any():
-                    mean_lat = filtered_df['Latitude'].mean()
-                    mean_lon = filtered_df['Longitude'].mean()
-                    print(f"Using coordinates from filtered data: {mean_lat}, {mean_lon}")
-                    fig = plotter.add_sunrise_sunset(fig, mean_lat, mean_lon)
-                elif proc_state.metadata_dir and meta_x and meta_y:
-                    meta_dir = Path(proc_state.metadata_dir)
-                    meta_files = list(meta_dir.glob("*.csv")) + list(meta_dir.glob("*.xlsx"))
-                    if meta_files:
-                        first_meta_file = meta_files[0]
-                        if str(first_meta_file).lower().endswith('.xlsx'):
-                            metadata_df = pd.read_excel(first_meta_file, sheet_name=0)
-                        else:
-                            metadata_df = pd.read_csv(first_meta_file)
+            if processor.metadata_centroid:
+                try:
+                    latitude, longitude = processor.metadata_centroid
+                    fig = plotter.add_sunrise_sunset(fig, latitude, longitude)
+                    print(f"Added sunrise/sunset lines using cached centroid: ({latitude:.4f}, {longitude:.4f})")
+                except ImportError as e:
+                     gr.Warning(f"Optional dependency missing for sunrise/sunset: {e}. Install with: pip install astral timezonefinder")
+                except Exception as e:
+                    gr.Warning(f"Could not add sunrise/sunset lines: {e}")
+            elif proc_state.metadata_dir:
+                 gr.Warning("Metadata loaded, but centroid could not be calculated or is invalid. Sunrise/sunset lines omitted.")
 
-                        lat_col = meta_x
-                        lon_col = meta_y
-                        if lat_col in metadata_df.columns and lon_col in metadata_df.columns:
-                             mean_lat = pd.to_numeric(metadata_df[lat_col], errors='coerce').mean()
-                             mean_lon = pd.to_numeric(metadata_df[lon_col], errors='coerce').mean()
-                             if pd.notna(mean_lat) and pd.notna(mean_lon):
-                                 print(f"Using average location from metadata file: {mean_lat}, {mean_lon}")
-                                 fig = plotter.add_sunrise_sunset(fig, mean_lat, mean_lon)
-                             else:
-                                 print("Could not calculate mean coordinates from metadata file.")
-                        else:
-                             print(f"Specified metadata columns '{lat_col}' or '{lon_col}' not found in file.")
-                    else:
-                        print("No metadata file found for sunrise/sunset fallback.")
-
-            except Exception as e:
-                print(f"Error adding sunrise/sunset lines: {str(e)}")
-                traceback.print_exc()
-
-            # Update the color map in the existing state instead of creating a new state
-            proc_state.color_map = plotter.color_map
+            if not proc_state.color_map and plotter.color_map:
+                 proc_state.color_map = plotter.color_map
+            elif plotter.color_map:
+                 proc_state.color_map = plotter.color_map
 
             return [proc_state, gr.update(value=fig, visible=True)]
 
@@ -1417,8 +1393,6 @@ def build_visualization_tab():
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
-                metadata_columns["X"],
-                metadata_columns["Y"],
                 correctness_mode
             ],
             outputs=[processor_state, temporal_scatter_output]
