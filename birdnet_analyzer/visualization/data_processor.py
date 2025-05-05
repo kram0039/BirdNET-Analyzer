@@ -11,6 +11,7 @@ import datetime
 import re
 import pathlib  # <-- Add pathlib import
 import itertools # <-- Add itertools import
+import functools # <-- Add functools import
 from typing import Dict, List, Optional, Tuple, Any
 
 import warnings
@@ -25,6 +26,23 @@ from birdnet_analyzer.evaluation.preprocessing.utils import (
 )
 from birdnet_analyzer.visualization.common import convert_timestamp_to_datetime
 
+# Pre-compiled regex patterns for datetime extraction
+DATETIME_PATTERNS = [
+    # YYYYMMDD_HHMMSS or YYYYMMDDHHMMSS
+    (re.compile(r'(\d{4}\d{2}\d{2}_\d{2}\d{2}\d{2})'), '%Y%m%d_%H%M%S'),
+    (re.compile(r'(\d{4}\d{2}\d{2}\d{2}\d{2}\d{2})'), '%Y%m%d%H%M%S'), # No underscore
+    # YYYY-MM-DD_HH-MM-SS or YYYY-MM-DD-HH-MM-SS
+    (re.compile(r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})'), '%Y-%m-%d_%H-%M-%S'),
+    (re.compile(r'(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})'), '%Y-%m-%d-%H-%M-%S'), # Hyphen separator
+    # YYYY.MM.DD_HH.MM.SS
+    (re.compile(r'(\d{4}\.\d{2}\.\d{2}_\d{2}\.\d{2}\.\d{2})'), '%Y.%m.%d_%H.%M.%S'),
+    # MM-DD-YYYY_HH-MM-SS
+    (re.compile(r'(\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{2})'), '%m-%d-%Y_%H-%M-%S'),
+    # DD-MM-YYYY_HH-MM-SS (Note: same regex as above, relies on format string)
+    (re.compile(r'(\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{2})'), '%d-%m-%Y_%H-%M-%S'),
+    # YYYY_MM_DD_HH_MM_SS
+    (re.compile(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})'), '%Y_%m_%d_%H_%M_%S'),
+]
 
 class DataProcessor:
     """
@@ -135,50 +153,26 @@ class DataProcessor:
 
         self.raw_predictions_df.rename(columns=standard_rename_map, inplace=True)
 
-    def _extract_datetime_from_filename(self, filename: str) -> Optional[datetime.datetime]:
-        """Extracts datetime from filename using flexible regex patterns."""
+    @functools.lru_cache(maxsize=None)  # Cache results for performance
+    def _extract_datetime_from_filename(self, filename: str) -> Any:  # Return pd.Timestamp or pd.NaT
+        """Extracts datetime from filename using pre-compiled regex patterns and pd.to_datetime."""
         if not isinstance(filename, str):
-            return None
+            return pd.NaT  # Return NaT for non-string input
 
-        datetime_patterns = [
-            (r'(\d{4})(\d{2})(\d{2})[_]?(\d{2})(\d{2})(\d{2})', '%Y%m%d_%H%M%S'),
-            (r'(\d{4})-(\d{2})-(\d{2})[_|-](\d{2})-(\d{2})-(\d{2})', '%Y-%m-%d_%H-%M-%S'),
-            (r'(\d{4})\.(\d{2})\.(\d{2})[_](\d{2})\.(\d{2})\.(\d{2})', '%Y.%m.%d_%H.%M.%S'),
-            (r'(\d{2})-(\d{2})-(\d{4})[_](\d{2})-(\d{2})-(\d{2})', '%m-%d-%Y_%H-%M-%S'),
-            (r'(\d{2})-(\d{2})-(\d{4})[_](\d{2})-(\d{2})-(\d{2})', '%d-%m-%Y_%H-%M-%S'),
-            (r'(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})', '%Y_%m_%d_%H_%M_%S'),
-        ]
-
-        for pattern, format_str in datetime_patterns:
-            match = re.search(pattern, filename)
+        for compiled_regex, fmt in DATETIME_PATTERNS:
+            match = compiled_regex.search(filename)
             if match:
                 try:
-                    dt_str_parts = match.groups()
-                    if format_str == '%Y%m%d_%H%M%S':
-                        dt_str = f"{dt_str_parts[0]}{dt_str_parts[1]}{dt_str_parts[2]}_{dt_str_parts[3]}{dt_str_parts[4]}{dt_str_parts[5]}"
-                    elif format_str == '%Y-%m-%d_%H-%M-%S':
-                        dt_str = f"{dt_str_parts[0]}-{dt_str_parts[1]}-{dt_str_parts[2]}_{dt_str_parts[3]}-{dt_str_parts[4]}-{dt_str_parts[5]}"
-                    elif format_str == '%Y.%m.%d_%H.%M.%S':
-                        dt_str = f"{dt_str_parts[0]}.{dt_str_parts[1]}.{dt_str_parts[2]}_{dt_str_parts[3]}.{dt_str_parts[4]}.{dt_str_parts[5]}"
-                    elif format_str == '%m-%d-%Y_%H-%M-%S':
-                        dt_str = f"{dt_str_parts[0]}-{dt_str_parts[1]}-{dt_str_parts[2]}_{dt_str_parts[3]}-{dt_str_parts[4]}-{dt_str_parts[5]}"
-                    elif format_str == '%d-%m-%Y_%H-%M-%S':
-                        dt_str = f"{dt_str_parts[0]}-{dt_str_parts[1]}-{dt_str_parts[2]}_{dt_str_parts[3]}-{dt_str_parts[4]}-{dt_str_parts[5]}"
-                    elif format_str == '%Y_%m_%d_%H_%M_%S':
-                        dt_str = f"{dt_str_parts[0]}_{dt_str_parts[1]}_{dt_str_parts[2]}_{dt_str_parts[3]}_{dt_str_parts[4]}_{dt_str_parts[5]}"
-                    else:
-                        continue
-
-                    parse_format = format_str
-                    if pattern == r'(\d{4})(\d{2})(\d{2})[_]?(\d{2})(\d{2})(\d{2})' and '_' not in dt_str:
-                        parse_format = '%Y%m%d%H%M%S'
-                    elif pattern == r'(\d{4})-(\d{2})-(\d{2})[_|-](\d{2})-(\d{2})-(\d{2})' and '-' in match.group(0) and '_' not in match.group(0):
-                        parse_format = '%Y-%m-%d-%H-%M-%S'
-
-                    return datetime.datetime.strptime(dt_str, parse_format)
+                    # Use the matched string directly with pd.to_datetime
+                    dt_str = match.group(1)  # Group 1 contains the core datetime string
+                    dt = pd.to_datetime(dt_str, format=fmt, errors='coerce')
+                    if not pd.isna(dt):
+                        return dt  # Return the first successful parse as Timestamp
                 except ValueError:
+                    # pd.to_datetime with errors='coerce' should handle most cases,
+                    # but catch explicit ValueError just in case.
                     continue
-        return None
+        return pd.NaT  # Return NaT if no pattern matched successfully
 
     def _extract_site_id_from_filename(self, filename: str, valid_site_ids: Optional[set] = None) -> Optional[str]:
         """Extracts site ID by checking filename parts against valid IDs. (DEPRECATED - use _match_site_id)"""
