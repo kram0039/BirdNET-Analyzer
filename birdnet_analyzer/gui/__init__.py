@@ -3,7 +3,7 @@ def main():
     import birdnet_analyzer.gui.segments as gs
     import birdnet_analyzer.gui.single_file as sfa
     import birdnet_analyzer.gui.utils as gu
-    from birdnet_analyzer.gui import embeddings, evaluation, review, species, train
+    from birdnet_analyzer.gui import embeddings, evaluation, review, species, train, visualization
 
     gu.open_window(
         [

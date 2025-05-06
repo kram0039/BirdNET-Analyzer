@@ -28,7 +28,10 @@ dependencies = [
     "tqdm",
     "pandas",
     "matplotlib",
-    "seaborn"
+    "seaborn",
+    "astral",
+    "openpyxl",
+    "timezonefinder"
 ]
 
 [project.optional-dependencies]
