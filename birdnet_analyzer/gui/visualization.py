@@ -402,11 +402,19 @@ def build_visualization_tab():
         threshold_download_btn_update = gr.update(visible=False)
 
         if proc:
-            class_thresholds_init_df = pd.DataFrame({
-                'Class': sorted(avail_classes),
-                'Threshold': [0.10] * len(avail_classes)
-            })
-            threshold_df_update = gr.update(visible=True, value=class_thresholds_init_df)
+            # Generate default thresholds when processor is ready
+            default_threshold = 0.1
+            if avail_classes:
+                class_thresholds_init_df = pd.DataFrame({
+                    'Class': sorted(list(avail_classes)),
+                    'Threshold': [default_threshold] * len(avail_classes)
+                })
+                threshold_df_update = gr.update(visible=True, value=class_thresholds_init_df) # Set value here
+            else:
+                # Handle case with no classes found
+                class_thresholds_init_df = pd.DataFrame(columns=['Class', 'Threshold'])
+                threshold_df_update = gr.update(visible=True, value=class_thresholds_init_df) # Show empty table
+
             threshold_json_btn_update = gr.update(visible=True)
             threshold_download_btn_update = gr.update(visible=True)
 
@@ -414,10 +422,12 @@ def build_visualization_tab():
                 processor=proc,
                 prediction_dir=prediction_dir,
                 metadata_dir=metadata_dir,
-                class_thresholds=class_thresholds_init_df
+                class_thresholds=class_thresholds_init_df # Store the generated df
             )
         else:
             state = None
+            # Ensure table is hidden if proc fails
+            threshold_df_update = gr.update(visible=False, value=None)
 
         new_classes = []
         new_recordings = []
