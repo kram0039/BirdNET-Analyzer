@@ -24,14 +24,20 @@ class SpatialDistributionPlotter:
         self.base_colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink']
 
     def _get_color_map(self, classes: List[str]) -> Dict[str, str]:
-        """Create consistent color mapping for classes.
-
-        Exactly matching TimeDistributionPlotter._get_color_map
-        """
-        # Sort classes alphabetically for consistent assignment
-        sorted_classes = sorted(classes)
-        colors = self.base_colors * (1 + len(sorted_classes) // len(self.base_colors))
-        return {cls: colors[i] for i, cls in enumerate(sorted_classes)}
+        """Create consistent color mapping for classes."""
+        sorted_classes = sorted(classes) # Sort once
+        
+        color_dict: Dict[str, str]
+        # self.base_colors is defined in __init__ and has 7 colors.
+        if len(sorted_classes) <= len(self.base_colors): # Effectively len(sorted_classes) <= 7
+            # Cycle through base_colors.
+            color_dict = {cls: self.base_colors[i % len(self.base_colors)] for i, cls in enumerate(sorted_classes)}
+        else:
+            # Use a more diverse color palette if more than 7 classes
+            extended_colors = px.colors.qualitative.Alphabet # Has 26 distinct colors
+            # Cycle through extended_colors if more classes than available colors
+            color_dict = {cls: extended_colors[i % len(extended_colors)] for i, cls in enumerate(sorted_classes)}
+        return color_dict
 
     def plot(self,
              agg_df: pd.DataFrame, # Expected columns: Site, Latitude, Longitude, Class, count

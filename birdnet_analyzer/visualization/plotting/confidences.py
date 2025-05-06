@@ -41,9 +41,20 @@ class ConfidencePlotter:
 
     def _get_color_map(self, classes: List[str]) -> Dict[str, str]:
         """Create consistent color mapping for classes."""
+        sorted_classes = sorted(classes)
+        
+        # Base colors used if number of classes is 7 or less.
         base_colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink']
-        colors = base_colors * (1 + len(classes) // len(base_colors))
-        return {cls: colors[i] for i, cls in enumerate(sorted(classes))}
+        
+        color_dict: Dict[str, str]
+        if len(sorted_classes) <= len(base_colors): # Effectively len(sorted_classes) <= 7
+            color_dict = {cls: base_colors[i % len(base_colors)] for i, cls in enumerate(sorted_classes)}
+        else:
+            # Use a more diverse color palette if more than 7 classes
+            extended_colors = px.colors.qualitative.Alphabet # Has 26 distinct colors
+            # Cycle through extended_colors if more classes than available colors
+            color_dict = {cls: extended_colors[i % len(extended_colors)] for i, cls in enumerate(sorted_classes)}
+        return color_dict
 
     def plot_histogram_matplotlib(
         self,

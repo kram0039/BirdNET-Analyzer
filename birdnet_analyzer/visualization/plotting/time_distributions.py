@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Tuple
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px  # Added import for plotly.express
 import numpy as np
 import matplotlib.colors as mcolors  # For color conversion
 import calendar  # Import calendar for month/day names
@@ -16,8 +17,18 @@ class TimeDistributionPlotter:
 
     def _get_color_map(self, classes: List[str]) -> Dict[str, str]:
         """Create consistent color mapping for classes."""
-        colors = self.base_colors * (1 + len(classes) // len(self.base_colors))
-        return {cls: colors[i] for i, cls in enumerate(sorted(classes))}
+        sorted_classes = sorted(classes)
+        
+        color_dict: Dict[str, str]
+        # self.base_colors is defined in __init__ and has 7 colors.
+        if len(sorted_classes) <= len(self.base_colors): # Effectively len(sorted_classes) <= 7
+            color_dict = {cls: self.base_colors[i % len(self.base_colors)] for i, cls in enumerate(sorted_classes)}
+        else:
+            # Use a more diverse color palette if more than 7 classes
+            extended_colors = px.colors.qualitative.Alphabet # Has 26 distinct colors
+            # Cycle through extended_colors if more classes than available colors
+            color_dict = {cls: extended_colors[i % len(extended_colors)] for i, cls in enumerate(sorted_classes)}
+        return color_dict
 
     def _color_to_rgba(self, color: str, opacity: float = 0.5) -> str:
         """Convert any color format to rgba string."""
