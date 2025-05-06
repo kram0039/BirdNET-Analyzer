@@ -489,6 +489,16 @@ def build_visualization_tab():
         except ValueError:
             return None
 
+    def map_correctness_mode_to_dp(ui_correctness_mode: str) -> str:
+        if ui_correctness_mode == loc.localize("viz-tab-correctness-only-correct"):
+            return "Correct"
+        elif ui_correctness_mode == loc.localize("viz-tab-correctness-only-incorrect"):
+            return "Incorrect"
+        elif ui_correctness_mode == loc.localize("viz-tab-correctness-only-unspecified"):
+            return "Unspecified"
+        # Default, including loc.localize("viz-tab-correctness-ignore")
+        return "All"
+
     def plot_predictions_action(
         proc_state: ProcessorState,
         selected_classes_list,
@@ -502,6 +512,8 @@ def build_visualization_tab():
         time_end_minute,
         correctness_mode="Ignore correctness flags"
     ):
+        dp_correctness_mode = map_correctness_mode_to_dp(correctness_mode)
+
         if not proc_state or not proc_state.processor:
             raise gr.Error(loc.localize("eval-tab-error-calc-metrics-first"))
 
@@ -520,7 +532,7 @@ def build_visualization_tab():
                 date_range_end=date_range_end,
                 time_start=time_start,
                 time_end=time_end,
-                correctness_mode=correctness_mode,
+                correctness_mode=dp_correctness_mode,
                 class_thresholds=thresholds_df,
             )
         except Exception as e:
@@ -561,6 +573,7 @@ def build_visualization_tab():
         time_end_minute,
         correctness_mode="Ignore correctness flags"
     ):
+        dp_correctness_mode = map_correctness_mode_to_dp(correctness_mode)
         if not proc_state or not proc_state.processor:
             raise gr.Error("Please load predictions first")
 
@@ -579,7 +592,7 @@ def build_visualization_tab():
                 date_range_end=date_range_end,
                 time_start=time_start,
                 time_end=time_end,
-                correctness_mode=correctness_mode,
+                correctness_mode=dp_correctness_mode,
                 class_thresholds=thresholds_df,
             )
         except Exception as e:
@@ -642,6 +655,7 @@ def build_visualization_tab():
         time_end_minute,
         correctness_mode="Ignore correctness flags"
     ):
+        dp_correctness_mode = map_correctness_mode_to_dp(correctness_mode)
         if not proc_state or not proc_state.processor:
             raise gr.Error("Please load predictions first")
         if proc_state.processor.metadata_df is None or proc_state.processor.metadata_df.empty:
@@ -671,7 +685,7 @@ def build_visualization_tab():
                 date_range_end=date_range_end,
                 time_start=time_start,
                 time_end=time_end,
-                correctness_mode=correctness_mode,
+                correctness_mode=dp_correctness_mode,
                 class_thresholds=thresholds_df,
             )
             print(f"Filtered data shape for spatial plot: {filtered_df.shape}")
@@ -737,6 +751,7 @@ def build_visualization_tab():
         time_end_minute,
         correctness_mode="Ignore correctness flags"
     ):
+        dp_correctness_mode = map_correctness_mode_to_dp(correctness_mode)
         if not proc_state or not proc_state.processor:
             raise gr.Error("Please load predictions first")
 
@@ -758,7 +773,7 @@ def build_visualization_tab():
                 date_range_end=date_range_end,
                 time_start=time_start,
                 time_end=time_end,
-                correctness_mode=correctness_mode,
+                correctness_mode=dp_correctness_mode,
                 class_thresholds=thresholds_df,
             )
         except Exception as e:
@@ -801,6 +816,7 @@ def build_visualization_tab():
         time_end_minute,
         correctness_mode="Ignore correctness flags"
     ):
+        dp_correctness_mode = map_correctness_mode_to_dp(correctness_mode)
         if not proc_state or not proc_state.processor:
             raise gr.Error("Please load predictions first")
 
@@ -822,7 +838,7 @@ def build_visualization_tab():
                 date_range_end=date_range_end,
                 time_start=time_start,
                 time_end=time_end,
-                correctness_mode=correctness_mode,
+                correctness_mode=dp_correctness_mode,
                 class_thresholds=thresholds_df,
             )
         except Exception as e:
