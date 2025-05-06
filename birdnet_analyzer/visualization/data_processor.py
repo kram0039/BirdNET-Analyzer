@@ -31,6 +31,8 @@ DATETIME_PATTERNS = [
     # YYYYMMDD_HHMMSS or YYYYMMDDHHMMSS
     (re.compile(r'(\d{4}\d{2}\d{2}_\d{2}\d{2}\d{2})'), '%Y%m%d_%H%M%S'),
     (re.compile(r'(\d{4}\d{2}\d{2}\d{2}\d{2}\d{2})'), '%Y%m%d%H%M%S'), # No underscore
+    # YYYYMMDD_HHMM (New pattern)
+    (re.compile(r'(\d{4}\d{2}\d{2}_\d{2}\d{2})'), '%Y%m%d_%H%M'),
     # YYYY-MM-DD_HH-MM-SS or YYYY-MM-DD-HH-MM-SS
     (re.compile(r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})'), '%Y-%m-%d_%H-%M-%S'),
     (re.compile(r'(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})'), '%Y-%m-%d-%H-%M-%S'), # Hyphen separator
