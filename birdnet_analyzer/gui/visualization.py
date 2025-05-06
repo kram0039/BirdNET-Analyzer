@@ -25,6 +25,12 @@ from birdnet_analyzer.visualization.plotting.spatial_distribution import Spatial
 from birdnet_analyzer.visualization.detection_counts import calculate_detection_counts
 
 from birdnet_analyzer.visualization.common import ProcessorState, convert_timestamp_to_datetime
+from birdnet_analyzer.visualization.caching import (
+    fingerprint_prediction_dir, fingerprint_metadata_file,
+)
+
+_PROCESSOR_CACHE: dict[str, dp.DataProcessor] = {}
+_METADATA_CACHE: dict[str, pd.DataFrame] = {}
 
 def get_date_range(df: pd.DataFrame) -> tuple:
     """Get the earliest and latest dates from the 'Date' column."""
@@ -188,78 +194,68 @@ def build_visualization_tab():
         pred_correctness=None,
         prediction_dir=None,
     ):
+        """
+        Return (classes, recordings, processor, prediction_dir).
+
+        A new DataProcessor is only created when either
+           – the directory contents      OR
+           – the user column mapping
+        changed, or if a cached processor's directory is no longer valid.
+        """
         if not prediction_files:
             return [], [], None, None
 
-        try:
-            if prediction_dir is None:
-                prediction_dir = ensure_tmp_dir(prediction_files, _prediction_file_cache, prefix="birdnet_pred_")
-
-            print(f"\nProcessing {len(prediction_files)} prediction files")
-            print(f"Using prediction directory: {prediction_dir}")
-
-            cols_pred = {}
-            for key, default in prediction_default_columns.items():
-                if key == "Start Time":
-                    cols_pred[key] = pred_start_time or default
-                elif key == "Class":
-                    cols_pred[key] = pred_class or default
-                elif key == "Confidence":
-                    cols_pred[key] = pred_confidence or default
-                elif key == "Recording":
-                    cols_pred[key] = pred_recording or default
-                elif key == "Correctness":
-                    cols_pred[key] = pred_correctness or default
-
-            print("Using column mappings:", cols_pred)
-
-            proc = dp.DataProcessor(
-                prediction_directory_path=prediction_dir,
-                prediction_file_name=None,
-                columns_predictions=cols_pred,
+        if prediction_dir is None:
+            prediction_dir = ensure_tmp_dir(
+                prediction_files, _prediction_file_cache, prefix="birdnet_pred_"
             )
+        
+        if prediction_dir is None:
+            return [], [], None, None
 
-            df = proc.get_complete_data()
+        cols_pred = {
+            "Start Time": pred_start_time  or prediction_default_columns["Start Time"],
+            "Class"     : pred_class       or prediction_default_columns["Class"],
+            "Confidence": pred_confidence  or prediction_default_columns["Confidence"],
+            "Recording" : pred_recording   or prediction_default_columns["Recording"],
+            "Correctness": pred_correctness or prediction_default_columns.get("Correctness"),
+        }
 
-            # Handle duplicate columns deterministically
-            if df.columns.has_duplicates:
-                original_columns = df.columns.tolist()
-                duplicated_indices = [i for i, dup in enumerate(df.columns.duplicated(keep='first')) if dup]
-                dropped_column_names_at_indices = [original_columns[i] for i in duplicated_indices]
-                df = df.loc[:, ~df.columns.duplicated(keep='first')]
-                if dropped_column_names_at_indices:
-                    # Use print as logger is not set up here
-                    print(f"Warning: Duplicate columns found in loaded data. Keeping first instance and removing others: {list(set(dropped_column_names_at_indices))}")
+        fp = fingerprint_prediction_dir(prediction_dir, cols_pred)
+        proc = _PROCESSOR_CACHE.get(fp)
 
+        if proc is not None:
+            try:
+                cached_proc_path = Path(proc.prediction_directory_path)
+                if not cached_proc_path.exists() or not any(cached_proc_path.iterdir()):
+                    print(f"⚠️ Cached DataProcessor's directory {cached_proc_path} is missing or empty. Rebuilding.")
+                    proc = None
+            except Exception as e:
+                print(f"⚠️ Error validating cached DataProcessor's directory ({proc.prediction_directory_path if proc else 'N/A'}): {e}. Rebuilding.")
+                proc = None
 
-            print(f"\nLoaded DataFrame shape after potential duplicate removal: {df.shape}")
-            print(f"DataFrame columns after potential duplicate removal: {df.columns.tolist()}")
-            if 'Recording' not in df.columns:
-                raise gr.Error("The processed DataFrame is missing the 'Recording' column.")
+        if proc is None:
+            print(f"⏳  Cache miss – building DataProcessor for {prediction_dir}")
+            try:
+                proc = dp.DataProcessor(
+                    prediction_directory_path=prediction_dir,
+                    columns_predictions=cols_pred,
+                )
+                _PROCESSOR_CACHE[fp] = proc
+            except Exception as e:
+                print(f"Error creating DataProcessor: {e}")
+                traceback.print_exc()
+                raise gr.Error(f"Error initializing processor: {str(e)}")
 
-            recordings = df['Recording'].dropna().astype(str).unique()
-            recordings = sorted([rec for rec in recordings if rec])
+        else:
+            print(f"✅  Using cached DataProcessor (key={fp[:8]}) for directory {proc.prediction_directory_path}")
 
-            if 'Class' not in df.columns:
-                raise gr.Error("The processed DataFrame is missing the 'Class' column.")
+        _ = proc.get_complete_data()
 
-            classes = df['Class'].dropna().astype(str).unique()
-            classes = sorted([cls for cls in classes if cls])
+        classes = sorted(proc.predictions_df['Class'].dropna().astype(str).unique()) if not proc.predictions_df.empty and 'Class' in proc.predictions_df.columns else []
+        recordings = sorted(proc_df['Recording'].dropna().astype(str).unique()) if not (proc_df := proc.predictions_df).empty and 'Recording' in proc_df.columns else []
 
-            print(f"Found {len(classes)} unique classes")
-
-            print(f"Found {len(recordings)} unique recordings")
-
-            return classes, recordings, proc, prediction_dir
-
-        except ValueError as e:
-            print(f"Error in initialize_processor: {str(e)}")
-            traceback.print_exc()
-            raise gr.Error(f"Error initializing processor: {str(e)}")
-        except Exception as e:
-            print(f"Unexpected error in initialize_processor: {str(e)}")
-            traceback.print_exc()
-            raise gr.Error(f"An unexpected error occurred: {str(e)}")
+        return classes, recordings, proc, prediction_dir
 
     def update_prediction_columns(uploaded_files):
         cols = get_columns_from_uploaded_files(uploaded_files)
@@ -280,7 +276,6 @@ def build_visualization_tab():
 
                 try:
                     with warnings.catch_warnings():
-                        # Filter specific pandas warning about mixed types in empty/header read
                         warnings.filterwarnings(
                             "ignore",
                             message="Columns \\(.*\\) have mixed types.*",
@@ -289,21 +284,18 @@ def build_visualization_tab():
                         warnings.filterwarnings(
                             "ignore",
                             message="Columns \\(.*\\) have mixed types.*",
-                            category=UserWarning # Sometimes it's a UserWarning
+                            category=UserWarning
                         )
 
                         if file_path.lower().endswith('.xlsx'):
                             try:
-                                # Try reading Excel first if applicable
                                 df = pd.read_excel(file_path, sheet_name=0, nrows=0)
                                 print(f"Successfully read Excel headers: {list(df.columns)}")
                                 cols.update(df.columns)
-                                continue # Move to the next file
+                                continue
                             except Exception as e_excel:
                                 print(f"Reading as Excel failed: {e_excel}. Will try CSV.")
-                                # Fall through to CSV reading if Excel fails
 
-                        # Try reading as CSV with auto-detection
                         try:
                             df = pd.read_csv(file_path, sep=None, engine='python', nrows=0)
                             print(f"Successfully read CSV/TSV headers with auto-detect: {list(df.columns)}")
@@ -311,7 +303,6 @@ def build_visualization_tab():
                         except UnicodeDecodeError as e_unicode:
                             print(f"Auto-detect CSV failed with UnicodeDecodeError: {e_unicode}. Trying latin1.")
                             try:
-                                # Fallback encoding if auto-detect fails due to encoding
                                 df = pd.read_csv(file_path, sep=None, engine='python', encoding='latin1', nrows=0)
                                 print(f"Successfully read CSV/TSV headers with latin1 fallback: {list(df.columns)}")
                                 cols.update(df.columns)
@@ -320,7 +311,6 @@ def build_visualization_tab():
                                 gr.Warning(f"Could not read headers from {os.path.basename(file_path)} using common methods.")
                         except Exception as e_csv:
                             print(f"General CSV reading failed: {e_csv}")
-                            # If it's not an Excel file and CSV reading fails, warn the user.
                             if not file_path.lower().endswith('.xlsx'):
                                 gr.Warning(f"Could not read headers from {os.path.basename(file_path)} as CSV/TSV.")
 
@@ -328,7 +318,6 @@ def build_visualization_tab():
                     print(f"Error processing file {file_path}: {e}")
                     gr.Warning(f"{loc.localize('eval-tab-warning-error-reading-file')} {os.path.basename(file_path)}")
 
-        # Remove empty strings or None that might sneak in
         final_cols = sorted([col for col in cols if col and pd.notna(col)])
         print(f"Final unique columns found: {final_cols}")
 
@@ -336,7 +325,6 @@ def build_visualization_tab():
         choices_with_empty = [""] + final_cols
         for label in ["Site", "X", "Y"]:
             default_val = metadata_default_columns.get(label)
-            # Use the default if it exists in the found columns, otherwise None (which maps to the empty choice)
             val = default_val if default_val in final_cols else None
             updates.append(gr.update(choices=choices_with_empty, value=val))
         return updates
@@ -358,7 +346,7 @@ def build_visualization_tab():
         prediction_dir = ensure_tmp_dir(prediction_files, _prediction_file_cache, prefix="birdnet_pred_")
         metadata_dir = ensure_tmp_dir(metadata_files, _metadata_file_cache, prefix="birdnet_meta_")
 
-        avail_classes, avail_recordings, proc, prediction_dir = initialize_processor(
+        avail_classes, avail_recordings, proc, prediction_dir_from_init = initialize_processor(
             prediction_files,
             pred_start_time,
             pred_class,
@@ -367,34 +355,42 @@ def build_visualization_tab():
             pred_correctness,
             prediction_dir,
         )
+        
+        prediction_dir = prediction_dir_from_init
 
-        if (
-            proc                                          
-            and metadata_files                             
-            and metadata_dir                               
-            and meta_site and meta_x and meta_y            
-        ):
-            try:
-                meta_path = Path(metadata_dir)
-                meta_file_list = list(meta_path.glob("*.csv")) + list(meta_path.glob("*.xlsx"))
-                if meta_file_list:
-                    first_meta_file = meta_file_list[0]
-                    print(f"Attempting to load metadata early from: {first_meta_file}")
-                    if str(first_meta_file).lower().endswith('.xlsx'):
-                        meta_df = pd.read_excel(first_meta_file, sheet_name=0)
-                    else:
-                        try:
-                            meta_df = pd.read_csv(first_meta_file, sep=None, engine="python")
-                        except Exception as e_utf8:
-                            print(f"UTF-8 read failed for {first_meta_file}, trying latin1: {e_utf8}")
-                            meta_df = pd.read_csv(first_meta_file, sep=None, engine="python", encoding='latin1')
-
-                    proc.set_metadata(meta_df, site_col=meta_site, lat_col=meta_x, lon_col=meta_y)
-                    print("Metadata loaded early into processor.")
+        if proc and metadata_files and metadata_dir and meta_site and meta_x and meta_y:
+            meta_path = Path(metadata_dir)
+            meta_file = next(
+                (p for p in meta_path.iterdir() if p.suffix.lower() in (".csv", ".xlsx")),
+                None
+            )
+            if meta_file is not None:
+                meta_fp = fingerprint_metadata_file(
+                    str(meta_file),
+                    {"Site": meta_site, "Latitude": meta_x, "Longitude": meta_y},
+                )
+                meta_df = _METADATA_CACHE.get(meta_fp)
+                if meta_df is None:
+                    print(f"⏳  Reading metadata {meta_file}")
+                    try:
+                        meta_df = (
+                            pd.read_excel(meta_file) if meta_file.suffix.lower() == ".xlsx"
+                            else pd.read_csv(meta_file, sep=None, engine="python")
+                        )
+                        _METADATA_CACHE[meta_fp] = meta_df
+                    except Exception as e:
+                        print(f"Error reading metadata file {meta_file}: {e}")
+                        gr.Warning(f"Could not read metadata file: {meta_file.name}. Error: {e}")
+                        meta_df = None
                 else:
-                    print("Metadata files selected, but no CSV/XLSX found in the directory for early loading.")
-            except Exception as e:
-                print(f"Error loading metadata early in update_selections: {e}")
+                    print(f"✅  Using cached metadata ({meta_fp[:8]})")
+
+                if meta_df is not None and (proc.metadata_df is None or proc.metadata_df is not meta_df):
+                    try:
+                        proc.set_metadata(meta_df, site_col=meta_site, lat_col=meta_x, lon_col=meta_y)
+                    except Exception as e:
+                        print(f"Error setting metadata: {e}")
+                        gr.Warning(f"Error processing metadata: {e}")
 
         class_thresholds_init_df = None
         threshold_df_update = gr.update(visible=False, value=None)
@@ -402,18 +398,16 @@ def build_visualization_tab():
         threshold_download_btn_update = gr.update(visible=False)
 
         if proc:
-            # Generate default thresholds when processor is ready
             default_threshold = 0.1
             if avail_classes:
                 class_thresholds_init_df = pd.DataFrame({
                     'Class': sorted(list(avail_classes)),
                     'Threshold': [default_threshold] * len(avail_classes)
                 })
-                threshold_df_update = gr.update(visible=True, value=class_thresholds_init_df) # Set value here
+                threshold_df_update = gr.update(visible=True, value=class_thresholds_init_df)
             else:
-                # Handle case with no classes found
                 class_thresholds_init_df = pd.DataFrame(columns=['Class', 'Threshold'])
-                threshold_df_update = gr.update(visible=True, value=class_thresholds_init_df) # Show empty table
+                threshold_df_update = gr.update(visible=True, value=class_thresholds_init_df)
 
             threshold_json_btn_update = gr.update(visible=True)
             threshold_download_btn_update = gr.update(visible=True)
@@ -422,11 +416,10 @@ def build_visualization_tab():
                 processor=proc,
                 prediction_dir=prediction_dir,
                 metadata_dir=metadata_dir,
-                class_thresholds=class_thresholds_init_df # Store the generated df
+                class_thresholds=class_thresholds_init_df
             )
         else:
             state = None
-            # Ensure table is hidden if proc fails
             threshold_df_update = gr.update(visible=False, value=None)
 
         new_classes = []
@@ -549,7 +542,6 @@ def build_visualization_tab():
 
         try:
             fig_hist = plotter.plot_histogram_plotly(title="Histogram of Confidence Scores by Class")
-            # No need to create a new state, just return the existing one
             return [proc_state, gr.update(visible=True, value=fig_hist)]
         except Exception as e:
             print(f"Error creating confidence plot: {e}")
@@ -917,7 +909,6 @@ def build_visualization_tab():
                 gr.Warning("Class thresholds not initialized. Cannot update.")
                 return proc_state, gr.update()
 
-            # Modify the existing thresholds DataFrame in-place
             updated_thresholds_df = proc_state.class_thresholds.copy()
             updated_thresholds_df.set_index('Class', inplace=True)
 
@@ -948,7 +939,6 @@ def build_visualization_tab():
             if warning_messages:
                 gr.Warning("\n".join(warning_messages))
 
-            # Update the state's class_thresholds in-place instead of creating a new state
             proc_state.class_thresholds = updated_thresholds_df
 
             gr.Info(f"Successfully loaded thresholds for {loaded_count} classes from JSON.")
@@ -1010,6 +1000,8 @@ def build_visualization_tab():
                         elif col == "Y":
                             label += " (Decimal Degrees)"
                         metadata_columns[col] = gr.Dropdown(choices=[], label=label)
+
+        load_data_btn = gr.Button("Load / refresh data", variant="primary", elem_id="viz_load_refresh_data_btn")
 
         with gr.Group(visible=True) as selection_group:
             with gr.Accordion(loc.localize("viz-tab-class-recording-accordion-label"), open=False):
@@ -1240,62 +1232,49 @@ def build_visualization_tab():
             outputs=[metadata_group],
         )
 
-        update_triggers = [
-            prediction_files_state,
-            metadata_files_state,
-            prediction_columns["Start Time"],
-            prediction_columns["Class"],
-            prediction_columns["Confidence"],
-            prediction_columns["Recording"],
-            prediction_columns["Correctness"],
-            metadata_columns["Site"],
-            metadata_columns["X"],
-            metadata_columns["Y"],
-        ]
-
-        for trigger in update_triggers:
-            trigger.change(
-                fn=update_selections,
-                inputs=[
-                    prediction_files_state,
-                    metadata_files_state,
-                    prediction_columns["Start Time"],
-                    prediction_columns["Class"],
-                    prediction_columns["Confidence"],
-                    prediction_columns["Recording"],
-                    prediction_columns["Correctness"],
-                    metadata_columns["Site"],
-                    metadata_columns["X"],
-                    metadata_columns["Y"],
-                    select_classes_checkboxgroup,
-                    select_recordings_checkboxgroup,
-                ],
-                outputs=[
-                    select_classes_checkboxgroup,
-                    select_recordings_checkboxgroup,
-                    processor_state,
-                    class_thresholds_df,
-                    threshold_json_select_btn,
-                    threshold_template_download_btn,
-                    classes_full_list_state,        
-                    recordings_full_list_state      
-                ],
-            ).success(
-                fn=update_datetime_defaults,
-                inputs=[processor_state],
-                outputs=[
-                    date_range_start,
-                    date_range_end,
-                    time_start_hour,
-                    time_start_minute,
-                    time_end_hour,
-                    time_end_minute
-                ]
-            ).success(
-                 fn=update_site_choices,
-                 inputs=[processor_state],
-                 outputs=[select_sites_checkboxgroup, sites_full_list_state]
-            )
+        load_data_btn.click(
+            fn=update_selections,
+            inputs=[
+                prediction_files_state,
+                metadata_files_state,
+                prediction_columns["Start Time"],
+                prediction_columns["Class"],
+                prediction_columns["Confidence"],
+                prediction_columns["Recording"],
+                prediction_columns["Correctness"],
+                metadata_columns["Site"],
+                metadata_columns["X"],
+                metadata_columns["Y"],
+                select_classes_checkboxgroup,
+                select_recordings_checkboxgroup,
+            ],
+            outputs=[
+                select_classes_checkboxgroup,
+                select_recordings_checkboxgroup,
+                processor_state,
+                class_thresholds_df,
+                threshold_json_select_btn,
+                threshold_template_download_btn,
+                classes_full_list_state,        
+                recordings_full_list_state      
+            ],
+            show_progress=True
+        ).success(
+            fn=update_datetime_defaults,
+            inputs=[processor_state],
+            outputs=[
+                date_range_start,
+                date_range_end,
+                time_start_hour,
+                time_start_minute,
+                time_end_hour,
+                time_end_minute
+            ]
+        ).success(
+            fn=update_site_choices,
+            inputs=[processor_state],
+            outputs=[select_sites_checkboxgroup, sites_full_list_state]
+        )
 
         threshold_json_select_btn.click(
             fn=select_threshold_json_file,

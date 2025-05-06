@@ -105,20 +105,10 @@ class DataProcessor:
         self.complete_df: pd.DataFrame = pd.DataFrame()  # final merged result
         # Cached geometric centre of all valid sites
         self.metadata_centroid: Optional[Tuple[float, float]] = None
+        self._predictions_ready = False # Added for lazy loading
 
         self._validate_columns()
         self.load_data()
-        self._process_predictions()  # heavy part – once
-        self._merge_predictions_metadata()  # no-op until metadata arrives
-
-        # Gather unique classes after initial processing
-        class_col = self.get_column_name("Class")
-        if class_col in self.predictions_df.columns:
-            self.classes = tuple(
-                sorted(self.predictions_df[class_col].dropna().unique())
-            )
-        else:
-            self.classes = tuple()
 
     def _validate_columns(self) -> None:
         """Validates essential prediction column mappings."""
@@ -637,6 +627,22 @@ class DataProcessor:
         self._process_metadata(metadata_df, site_col, lat_col, lon_col)
         self._merge_predictions_metadata()
 
+    def _ensure_predictions(self):
+        if not self._predictions_ready:
+            self._process_predictions()
+            self._merge_predictions_metadata() # This should be called after _process_predictions and potentially after metadata is set
+            
+            # Gather unique classes after processing
+            class_col = self.get_column_name("Class")
+            if class_col in self.predictions_df.columns and not self.predictions_df.empty:
+                self.classes: Tuple[str, ...] = tuple(
+                    sorted(self.predictions_df[class_col].dropna().astype(str).unique())
+                )
+            else:
+                self.classes = tuple()
+            
+            self._predictions_ready = True
+
     def get_column_name(self, field_name: str) -> str:
         """
         Retrieves the actual column name in the DataFrame for a standard field.
@@ -665,7 +671,7 @@ class DataProcessor:
         return field_name
 
     def get_complete_data(self) -> pd.DataFrame:
-        """Retrieves a copy of the complete, processed, unfiltered DataFrame."""
+        self._ensure_predictions()
         return self.complete_df.copy()
 
     def get_filtered_data(
@@ -699,6 +705,8 @@ class DataProcessor:
         Returns:
             A filtered pandas DataFrame.
         """
+        self._ensure_predictions()
+
         if self.complete_df.empty:
             return pd.DataFrame()
 
