@@ -9,9 +9,9 @@ methods for filtering that data.
 import os
 import datetime
 import re
-import pathlib  # <-- Add pathlib import
-import itertools # <-- Add itertools import
-import functools # <-- Add functools import
+import pathlib
+import itertools
+import functools
 from typing import Dict, List, Optional, Tuple, Any
 
 import warnings
@@ -57,8 +57,9 @@ class DataProcessor:
         prediction_file_name (Optional[str]): Name of a single prediction file, if specified.
         columns_predictions (Dict[str, str]): Column mappings for prediction files.
         raw_predictions_df (pd.DataFrame): Raw data loaded from prediction files.
+        predictions_df (pd.DataFrame): Processed prediction data without metadata.
         metadata_df (Optional[pd.DataFrame]): Processed and validated site metadata (site_name, latitude, longitude).
-        complete_df (pd.DataFrame): Fully processed, unfiltered data including merged metadata and derived columns.
+        complete_df (pd.DataFrame): Fully processed, merged data including metadata and derived columns.
         classes (tuple[str]): Sorted tuple of unique class names found in the data.
         metadata_centroid (Optional[Tuple[float, float]]): Mean latitude and longitude of sites in metadata_df, if available.
     """
@@ -98,20 +99,23 @@ class DataProcessor:
         )
 
         # Internal DataFrames
-        self.raw_predictions_df: pd.DataFrame = pd.DataFrame()  # Raw loaded data
-        self.metadata_df: Optional[pd.DataFrame] = None  # Processed metadata
-        self.complete_df: pd.DataFrame = pd.DataFrame()  # Fully processed, unfiltered data
-        self.metadata_centroid: Optional[Tuple[float, float]] = None # Cached mean coordinates
+        self.raw_predictions_df: pd.DataFrame = pd.DataFrame()  # raw on disk
+        self.predictions_df: pd.DataFrame = pd.DataFrame()  # processed – **no metadata**
+        self.metadata_df: Optional[pd.DataFrame] = None  # cleaned site meta
+        self.complete_df: pd.DataFrame = pd.DataFrame()  # final merged result
+        # Cached geometric centre of all valid sites
+        self.metadata_centroid: Optional[Tuple[float, float]] = None
 
         self._validate_columns()
         self.load_data()
-        self._process_data()  # Initial processing without metadata
+        self._process_predictions()  # heavy part – once
+        self._merge_predictions_metadata()  # no-op until metadata arrives
 
         # Gather unique classes after initial processing
         class_col = self.get_column_name("Class")
-        if class_col in self.complete_df.columns:
+        if class_col in self.predictions_df.columns:
             self.classes = tuple(
-                sorted(self.complete_df[class_col].dropna().unique())
+                sorted(self.predictions_df[class_col].dropna().unique())
             )
         else:
             self.classes = tuple()
@@ -185,11 +189,6 @@ class DataProcessor:
                     continue
         return pd.NaT  # Return NaT if no pattern matched successfully
 
-    def _extract_site_id_from_filename(self, filename: str, valid_site_ids: Optional[set] = None) -> Optional[str]:
-        """Extracts site ID by checking filename parts against valid IDs. (DEPRECATED - use _match_site_id)"""
-        # ↪ deprecated – keep for back-compat, wraps the new logic
-        return self._match_site_id(filename, valid_site_ids)
-
     def _match_site_id(
         self,
         recording_path: str | None,
@@ -223,81 +222,70 @@ class DataProcessor:
 
         return None
 
-    def _process_data(self) -> None:
+    def _process_predictions(self) -> None:
         """
-        Processes raw prediction data to create the complete, unfiltered DataFrame.
-        Merges metadata if available. Creates derived columns.
+        Heavy, one-time transformation of raw prediction files.
+        Does **not** look at metadata at all.
+        Populates self.predictions_df.
         """
         if self.raw_predictions_df.empty:
-            self.complete_df = pd.DataFrame()
+            self.predictions_df = pd.DataFrame()
             return
 
         df = self.raw_predictions_df.copy()
 
+        # Get the original names of essential columns from the input DataFrame
         start_time_col = self.get_column_name("Start Time")
         class_col = self.get_column_name("Class")
         conf_col = self.get_column_name("Confidence")
+        # recording_col is the name of the column in df that contains the original recording identifier
         recording_col = self.get_column_name("Recording")
         correctness_col = self.get_column_name("Correctness")
 
-        if start_time_col not in df.columns:
-            df[start_time_col] = 0.0
-        if class_col not in df.columns:
-            df[class_col] = "Unknown"
-        if conf_col not in df.columns:
-            df[conf_col] = 0.0
-        if correctness_col not in df.columns:
-            df[correctness_col] = None
+        # Ensure essential columns exist, fill with defaults if not
+        if start_time_col not in df.columns: df[start_time_col] = 0.0
+        if class_col not in df.columns: df[class_col] = "Unknown"
+        if conf_col not in df.columns: df[conf_col] = 0.0
+        if correctness_col not in df.columns: df[correctness_col] = None # Will be handled later
 
+        # Coerce types
         df[start_time_col] = pd.to_numeric(df[start_time_col], errors='coerce').fillna(0.0)
         df[conf_col] = pd.to_numeric(df[conf_col], errors='coerce').fillna(0.0)
 
+        # --- Derive recording path, filename, and stem ---
         try:
-            # Store the original path string first
             if recording_col in df.columns and df[recording_col].notna().any():
                  df["recording_path_str"] = df[recording_col].astype(str)
-            elif "source_file" in df.columns:
+            elif "source_file" in df.columns: # Fallback to source_file
                  df["recording_path_str"] = df["source_file"].astype(str)
             else:
-                 df["recording_path_str"] = "unknown_path" # Should ideally not happen if source_file is guaranteed
+                 df["recording_path_str"] = "unknown_path"
 
-            # Now extract basename and stem
-            if recording_col in df.columns and df[recording_col].notna().any():
-                df["recording_filename_with_ext"] = df[recording_col].apply(
-                    lambda x: os.path.basename(str(x)) if pd.notnull(x) else ""
-                )
-            elif "source_file" in df.columns:
-                # Fallback to source_file if Recording column is missing/empty
-                df["recording_filename_with_ext"] = df["source_file"].apply(
-                    lambda x: os.path.basename(str(x)) if pd.notnull(x) else ""
-                )
-            else:
-                # If neither Recording nor source_file is useful, assign a default
-                df["recording_filename_with_ext"] = "unknown_recording.ext"
-
+            df["recording_filename_with_ext"] = df["recording_path_str"].apply(
+                lambda x: os.path.basename(str(x)) if pd.notnull(x) else ""
+            )
             df["recording_filename"] = df["recording_filename_with_ext"].apply(
                 lambda x: os.path.splitext(x)[0] if pd.notnull(x) else ""
             )
-            # Clean up potential empty strings after extraction
-            df["recording_filename"] = df["recording_filename"].str.strip().replace('', pd.NA)
-            df["recording_filename_with_ext"] = df["recording_filename_with_ext"].str.strip().replace('', pd.NA)
-            df["recording_path_str"] = df["recording_path_str"].str.strip().replace('', pd.NA)
-
-
+            # Clean up potential empty strings
+            for col_name in ["recording_path_str", "recording_filename_with_ext", "recording_filename"]:
+                if col_name in df.columns:
+                    df[col_name] = df[col_name].str.strip().replace('', pd.NA)
         except Exception as e:
             print(f"Warning: Error processing recording filenames/paths: {e}")
             df["recording_path_str"] = pd.NA
-            df["recording_filename"] = pd.NA
             df["recording_filename_with_ext"] = pd.NA
+            df["recording_filename"] = pd.NA
 
+        # --- Datetime processing ---
         df['recording_datetime'] = df['recording_filename_with_ext'].apply(self._extract_datetime_from_filename)
-
         df['prediction_time'] = pd.NaT
         valid_dt_mask = df['recording_datetime'].notna()
-        df.loc[valid_dt_mask, 'prediction_time'] = df.loc[valid_dt_mask].apply(
-            lambda row: row['recording_datetime'] + pd.to_timedelta(row[start_time_col], unit='s'),
-            axis=1
-        )
+        if valid_dt_mask.any():
+            df.loc[valid_dt_mask, 'prediction_time'] = df.loc[valid_dt_mask].apply(
+                lambda row: row['recording_datetime'] + pd.to_timedelta(row[start_time_col], unit='s'),
+                axis=1
+            )
         df['prediction_time'] = pd.to_datetime(df['prediction_time'], errors='coerce')
 
         dt_series = df['prediction_time'].dt
@@ -313,138 +301,70 @@ class DataProcessor:
         df['prediction_weekday'] = dt_series.weekday.astype('Int64')
         df['prediction_time_of_day'] = dt_series.time
 
+        # --- Correctness processing ---
         if correctness_col in df.columns:
             df[correctness_col] = df[correctness_col].astype(str).str.lower().str.strip()
             correctness_map = {
                 'true': True, 'correct': True, '1': True, '1.0': True,
                 'false': False, 'incorrect': False, '0': False, '0.0': False,
             }
+            # Create the boolean 'Correctness' column
             df['Correctness'] = df[correctness_col].apply(
                 lambda x: correctness_map.get(x, None) if isinstance(x, str) else (x if isinstance(x, bool) else None)
             )
         else:
-            df['Correctness'] = None
+            df['Correctness'] = None # Ensure the column exists even if source is missing
         df['Correctness'] = df['Correctness'].astype('boolean')
 
-        # --- Site ID Extraction and Metadata Merging ---
-        valid_site_ids = set(self.metadata_df['site_name'].dropna().astype(str).unique()) if self.metadata_df is not None else None
 
-        # Apply site ID extraction using the new multi-level matching logic
-        df['site_name'] = df['recording_path_str'].apply(
-            lambda p: self._match_site_id(p, valid_site_ids)
-        )
+        # --- Renaming and column finalization for predictions_df ---
+        rename_actions = {}
 
-        if self.metadata_df is not None:
-            meta_to_merge = self.metadata_df[['site_name', 'latitude', 'longitude']].drop_duplicates(subset=['site_name']).set_index('site_name')
+        # Generated date/time parts
+        rename_actions.update({
+            'prediction_date': 'Date', 'prediction_time_of_day': 'Time',
+            'prediction_year': 'Year', 'prediction_month': 'Month',
+            'prediction_day': 'Day', 'prediction_hour': 'Hour',
+        })
 
-            # Perform the merge using map
-            df['latitude'] = df['site_name'].map(meta_to_merge['latitude'])
-            df['longitude'] = df['site_name'].map(meta_to_merge['longitude'])
+        # 'recording_filename' is the processed version and should become the 'Recording' column.
+        # If a column named 'Recording' already exists and it's not 'recording_filename' itself,
+        # drop it to prevent duplicates when 'recording_filename' is renamed.
+        if 'Recording' in df.columns and 'Recording' != 'recording_filename':
+            df.drop(columns=['Recording'], inplace=True, errors='ignore')
+        rename_actions['recording_filename'] = 'Recording' # This will be the definitive 'Recording' column
 
-            unmatched_sites = df['site_name'].notna() & df['latitude'].isna()  # Check where site_name exists but coords are NaN after merge
-            if unmatched_sites.any():
-                num_unmatched = unmatched_sites.sum()
-                sample_unmatched_names = df.loc[unmatched_sites, 'site_name'].unique()[:5]
-                print(f"Warning: {num_unmatched} records have site names ('{', '.join(sample_unmatched_names)}', ...) that were extracted from filenames but not found in the metadata (or metadata lacks coords).")
-        else:
-            df['latitude'] = pd.NA
-            df['longitude'] = pd.NA
+        # Map original input column names (if different) to standard output names.
+        # These are the columns like start_time_col, class_col, etc.
+        if start_time_col != 'Start Time': rename_actions[start_time_col] = 'Start Time'
+        if class_col != 'Class': rename_actions[class_col] = 'Class'
+        if conf_col != 'Confidence': rename_actions[conf_col] = 'Confidence'
+        # The boolean 'Correctness' column is already named 'Correctness'.
+        # The original correctness_col (text version) will be handled below if redundant.
 
-        # Convert coordinates to numeric, coercing errors
-        df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
-        df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
-
-        # --- Renaming Logic ---
-        final_rename_map = {
-            'prediction_date': 'Date',
-            'prediction_time_of_day': 'Time',
-            'prediction_year': 'Year',
-            'prediction_month': 'Month',
-            'prediction_day': 'Day',
-            'prediction_hour': 'Hour',
-            'site_name': 'Site',
-            'latitude': 'Latitude',
-            'longitude': 'Longitude',
-            'Start Time': 'Start Time',
-            'Class': 'Class',
-            'Confidence': 'Confidence',
-            'Correctness': 'Correctness',
-            'recording_filename': 'Recording',
+        # Apply renames: only if the source column (key) exists in df and key is different from value.
+        active_renames = {
+            k: v for k, v in rename_actions.items()
+            if k in df.columns and k != v
         }
+        df.rename(columns=active_renames, inplace=True)
 
-        final_rename_map_filtered = {}
-        current_columns = set(df.columns)
-        for source_col, target_col in final_rename_map.items():
-            if source_col in current_columns:
-                if target_col not in current_columns or source_col == target_col:
-                    final_rename_map_filtered[source_col] = target_col
+        # Drop original source columns if they are now superseded by the standardized ones and had different names.
+        # The original 'recording_col' (e.g., "Path", "File Name") is superseded by the new 'Recording' column.
+        # If its original name (recording_col) is still in df and is not 'Recording', drop it.
+        if recording_col in df.columns and recording_col != 'Recording':
+            df.drop(columns=[recording_col], inplace=True, errors='ignore')
 
-        df.rename(columns=final_rename_map_filtered, inplace=True)
+        # If the original correctness_col (text version) still exists,
+        # and it's not named 'Correctness' (which is the name of the boolean column), drop it.
+        if correctness_col in df.columns and correctness_col != 'Correctness' and 'Correctness' in df.columns:
+            df.drop(columns=[correctness_col], inplace=True, errors='ignore')
 
-        # --- Column Selection Logic ---
-        final_columns = [
-            'Recording', 'Date', 'Time', 'Year', 'Month', 'Day', 'Hour',
-            'Start Time', 'Confidence', 'Class', 'Correctness',
-            'Site', 'Latitude', 'Longitude',
-            'prediction_time',
-            'prediction_minute', 'prediction_second', 'prediction_dayofyear',
-            'prediction_weekofyear', 'prediction_weekday',
-            'recording_filename_with_ext', 'source_file', 'recording_path_str'
-        ]
-        if 'Recording' not in df.columns and 'recording_filename' in df.columns:
-            if 'recording_filename' not in final_columns:
-                final_columns.insert(1, 'recording_filename')
+        self.predictions_df = df
 
-        existing_final_columns = [col for col in final_columns if col in df.columns]
-        other_cols = [col for col in df.columns if col not in existing_final_columns]
-
-        self.complete_df = df[existing_final_columns + other_cols].copy()
-
-        duplicates = self.complete_df.columns[self.complete_df.columns.duplicated()]
-        if not duplicates.empty:
-            print(f"Warning: Duplicate columns found after processing: {duplicates.tolist()}")
-
-    def _clean_coordinate(self, value):
-        """Cleans coordinate values (string or numeric) to float or None."""
-        if pd.isna(value):
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        try:
-            cleaned_val = str(value).strip().replace(',', '.')
-            cleaned_val = re.sub(r'[^\d.-]+', '', cleaned_val)
-            if cleaned_val.count('.') > 1:
-                parts = cleaned_val.split('.')
-                cleaned_val = parts[0] + '.' + parts[1]
-            if '-' in cleaned_val[1:]:
-                cleaned_val = cleaned_val.replace('-', '')
-                if str(value).strip().startswith('-'):
-                    cleaned_val = '-' + cleaned_val
-
-            return float(cleaned_val)
-        except (ValueError, TypeError):
-            return None
-
-    def set_metadata(
-        self,
-        metadata_df: pd.DataFrame,
-        site_col: str = "Site",
-        lat_col: str = "Latitude",
-        lon_col: str = "Longitude",
-) -> None:
-        """
-        Validate, clean and attach site-level metadata (site ID ⇢ lat/lon) to
-        the processor, then re-run the internal data-processing pipeline and
-        calculate the metadata centroid.
-
-        Parameters
-        ----------
-        metadata_df : pd.DataFrame
-            Table that must contain at least the three columns given in
-            *site_col*, *lat_col* and *lon_col*.
-        site_col, lat_col, lon_col : str, default see signature
-            Column names for site ID, latitude and longitude respectively.
-        """
+    def _process_metadata(self, metadata_df: pd.DataFrame,
+                          site_col="Site", lat_col="Latitude", lon_col="Longitude") -> None:
+        """Clean & validate site metadata, cache centroid."""
         # Clear previous centroid before processing new metadata
         self.metadata_centroid = None
 
@@ -452,7 +372,6 @@ class DataProcessor:
         if metadata_df is None or metadata_df.empty:
             self.metadata_df = None
             print("Metadata is empty, clearing existing metadata.")
-            self._process_data() # Re-process without metadata
             return
 
         # ── 1. Column checks ─────────────────────────────────────────────────────
@@ -500,7 +419,7 @@ class DataProcessor:
 
         dups = meta[meta.duplicated(subset=["site_name"], keep=False)]
         inconsistent_sites_to_remove: set[str] = set()
-        consistent_duplicate_count = 0 # Keep track for potential logging if needed
+        consistent_duplicate_count = 0  # Keep track for potential logging if needed
 
         if not dups.empty:
             for site, grp in dups.groupby("site_name"):
@@ -532,7 +451,6 @@ class DataProcessor:
             meta = meta.drop_duplicates(subset=["site_name"], keep="first")
             if n_consistent_dupes_to_drop > 0:
                 print(f"Removed {n_consistent_dupes_to_drop} duplicate metadata entries for sites with identical coordinates.")
-
 
         # Drop temporary columns before proceeding
         meta = meta.drop(columns=["lat_round", "lon_round"], errors='ignore')
@@ -572,56 +490,152 @@ class DataProcessor:
                         print(f"Warning: Calculated centroid ({mean_lat:.4f}, {mean_lon:.4f}) is outside valid geographic bounds. Centroid not cached.")
                         self.metadata_centroid = None
                 else:
-                     print("Warning: Could not calculate metadata centroid (mean lat/lon is NaN).")
-                     self.metadata_centroid = None
+                    print("Warning: Could not calculate metadata centroid (mean lat/lon is NaN).")
+                    self.metadata_centroid = None
             except Exception as e:
-                 print(f"Error during centroid calculation: {e}. Centroid not cached.")
-                 self.metadata_centroid = None
+                print(f"Error during centroid calculation: {e}. Centroid not cached.")
+                self.metadata_centroid = None
 
+    def _finalize_output_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Shared by predictions-only and merge paths – rename/output order."""
+        final_rename_map = {
+            'prediction_date': 'Date',
+            'prediction_time_of_day': 'Time',
+            'prediction_year': 'Year',
+            'prediction_month': 'Month',
+            'prediction_day': 'Day',
+            'prediction_hour': 'Hour',
+            'site_name': 'Site',
+            'latitude': 'Latitude',
+            'longitude': 'Longitude',
+            'Start Time': 'Start Time',
+            'Class': 'Class',
+            'Confidence': 'Confidence',
+            'Correctness': 'Correctness',
+            'recording_filename': 'Recording',
+        }
+        df = df.rename(columns={k: v for k, v in final_rename_map.items() if k in df.columns and k != v})
 
-        # Re-run processing so that predictions gain lat/lon/site info
-        self._process_data()
+        wanted = [
+            'Recording', 'Date', 'Time', 'Year', 'Month', 'Day', 'Hour',
+            'Start Time', 'Confidence', 'Class', 'Correctness',
+            'Site', 'Latitude', 'Longitude',
+            'prediction_time',
+            'prediction_minute', 'prediction_second', 'prediction_dayofyear',
+            'prediction_weekofyear', 'prediction_weekday',
+            'recording_filename_with_ext', 'source_file', 'recording_path_str'
+        ]
+        ordered = [c for c in wanted if c in df.columns] + [c for c in df.columns if c not in wanted]
+        return df.loc[:, ordered]
 
-        # ──────────────────────────────────────────────────────────────
-        # NEW ▶ warn about recordings without a matched site
-        # ──────────────────────────────────────────────────────────────
+    def _merge_predictions_metadata(self) -> None:
+        """Join already-processed predictions with (optional) metadata."""
+        if self.predictions_df.empty:
+            self.complete_df = pd.DataFrame()
+            return
+
+        # start from a copy so we never mutate predictions_df
+        df = self.predictions_df.copy()
+
+        if self.metadata_df is None or self.metadata_df.empty:
+            # No metadata – the prediction table *is* the final result (after final column ordering)
+            self.complete_df = self._finalize_output_columns(df)
+            return
+
+        # -------- site matching --------
+        valid_site_ids = set(self.metadata_df['site_name'])
+        # Ensure 'recording_path_str' exists from _process_predictions
+        if 'recording_path_str' not in df.columns:
+            # This case should ideally be handled by _process_predictions ensuring the column exists
+            # For robustness, if it's missing, we can't match sites.
+            print("Warning: 'recording_path_str' missing from predictions_df, cannot merge site metadata.")
+            self.complete_df = self._finalize_output_columns(df) # Finalize what we have
+            return
+
+        df['site_name'] = df['recording_path_str'].apply(
+            lambda p: self._match_site_id(p, valid_site_ids)
+        )
+
+        meta_lookup = self.metadata_df.set_index('site_name')[['latitude', 'longitude']]
+        df['latitude']  = df['site_name'].map(meta_lookup['latitude'])
+        df['longitude'] = df['site_name'].map(meta_lookup['longitude'])
+
+        # Convert coordinates to numeric, coercing errors
+        df['latitude'] = pd.to_numeric(df['latitude'], errors='coerce')
+        df['longitude'] = pd.to_numeric(df['longitude'], errors='coerce')
+
+        # -------- final tidy-up (rename/order columns) --------
+        df = self._finalize_output_columns(df)
+
+        self.complete_df = df
+
+        # --- Warning for unmatched sites (moved here) ---
         try:
-            df = self.complete_df
             if (
-                df is not None
-                and not df.empty
-                and "Recording" in df.columns
-                and "Site"      in df.columns
+                not self.complete_df.empty
+                and "Recording" in self.complete_df.columns
+                and "Site"      in self.complete_df.columns # Site column should exist now if metadata was provided
             ):
-                mask_no_site = df["Site"].isna()
-                if mask_no_site.any():
+                mask_no_site = self.complete_df["Site"].isna()
+                # Only warn if metadata was provided but some sites still couldn't be matched
+                if mask_no_site.any() and self.metadata_df is not None and not self.metadata_df.empty:
                     missing_recs = (
-                        df.loc[mask_no_site, "Recording"]
+                        self.complete_df.loc[mask_no_site, "Recording"]
                         .dropna()
                         .astype(str)
                         .unique()
                     )
                     if len(missing_recs) > 0:
                         num_missing = len(missing_recs)
+                        # Use 'Site' column here as 'site_name' might have been renamed by _finalize_output_columns
+                        sample_unmatched_site_names_from_preds = self.complete_df.loc[mask_no_site & self.complete_df['Site'].notna(), 'Site'].unique()[:3]
+
+                        warning_message_parts = [f"No site could be matched for {num_missing} recording(s)."]
+                        if len(sample_unmatched_site_names_from_preds) > 0:
+                             warning_message_parts.append(f"  (Examples of site names from recordings that were not in metadata or had no coords: {', '.join(sample_unmatched_site_names_from_preds)})")
+
                         if num_missing > 10:
                             display_recs = missing_recs[:10]
                             rec_list = "\n".join(display_recs)
-                            warning_message = (
-                                f"No site could be matched for {num_missing} recording(s).\n"
-                                f"Showing the first 10:\n{rec_list}\n"
-                                f"... (and {num_missing - 10} more)"
-                            )
+                            warning_message_parts.append(f"  Showing first 10 affected recordings:\n{rec_list}\n  ... (and {num_missing - 10} more)")
                         else:
                             rec_list = "\n".join(missing_recs)
-                            warning_message = (
-                                f"No site could be matched for {num_missing} recording(s):\n{rec_list}"
-                            )
-                        gr.Warning(warning_message)
-        except Exception as exc:  # keep GUI alive if something goes wrong
-            print(
-                "WARNING-handler for unmatched sites failed:\n",
-                repr(exc)
-            )
+                            warning_message_parts.append(f"  Affected recordings:\n{rec_list}")
+                        gr.Warning("\n".join(warning_message_parts))
+        except Exception as exc:
+            print(f"WARNING-handler for unmatched sites failed: {exc!r}")
+
+    def _clean_coordinate(self, value):
+        """Cleans coordinate values (string or numeric) to float or None."""
+        if pd.isna(value):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            cleaned_val = str(value).strip().replace(',', '.')
+            cleaned_val = re.sub(r'[^\d.-]+', '', cleaned_val)
+            if cleaned_val.count('.') > 1:
+                parts = cleaned_val.split('.')
+                cleaned_val = parts[0] + '.' + parts[1]
+            if '-' in cleaned_val[1:]:
+                cleaned_val = cleaned_val.replace('-', '')
+                if str(value).strip().startswith('-'):
+                    cleaned_val = '-' + cleaned_val
+
+            return float(cleaned_val)
+        except (ValueError, TypeError):
+            return None
+
+    def set_metadata(
+        self,
+        metadata_df: pd.DataFrame,
+        site_col: str = "Site",
+        lat_col: str = "Latitude",
+        lon_col: str = "Longitude",
+    ) -> None:
+        """Public entry point – cleans metadata then (re)merges."""
+        self._process_metadata(metadata_df, site_col, lat_col, lon_col)
+        self._merge_predictions_metadata()
 
     def get_column_name(self, field_name: str) -> str:
         """
@@ -636,10 +650,14 @@ class DataProcessor:
         if mapped_name:
             if mapped_name in self.raw_predictions_df.columns:
                 return mapped_name
-            elif mapped_name in self.complete_df.columns:
+            if mapped_name in self.predictions_df.columns:
+                return mapped_name
+            if mapped_name in self.complete_df.columns:
                 return mapped_name
 
         if field_name in self.complete_df.columns:
+            return field_name
+        if field_name in self.predictions_df.columns:
             return field_name
         if field_name in self.raw_predictions_df.columns:
             return field_name
