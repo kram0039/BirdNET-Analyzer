@@ -2,22 +2,19 @@
 
 import datetime
 import os
-
-import numpy as np
-
-import birdnet_analyzer.analyze.utils as analyze
-import birdnet_analyzer.audio as audio
-import birdnet_analyzer.config as cfg
-import birdnet_analyzer.model as model
-import birdnet_analyzer.utils as utils
-
-from perch_hoplite.db import sqlite_usearch_impl
-from perch_hoplite.db import interface as hoplite
-from ml_collections import ConfigDict
 from functools import partial
-from tqdm import tqdm
 from multiprocessing import Pool
 
+import numpy as np
+from ml_collections import ConfigDict
+from perch_hoplite.db import interface as hoplite
+from perch_hoplite.db import sqlite_usearch_impl
+from tqdm import tqdm
+
+import birdnet_analyzer.config as cfg
+from birdnet_analyzer import audio, model, utils
+from birdnet_analyzer.analyze.utils import get_raw_audio_from_file
+from birdnet_analyzer.embeddings.core import get_database
 
 DATASET_NAME: str = "birdnet_analyzer_dataset"
 
@@ -42,7 +39,7 @@ def analyze_file(item, db: sqlite_usearch_impl.SQLiteUsearchDB):
         print(f"Error: Cannot analyze audio file {fpath}. File corrupt?\n", flush=True)
         utils.write_error_log(ex)
 
-        return None
+        return
 
     # Start time
     start_time = datetime.datetime.now()
@@ -55,7 +52,7 @@ def analyze_file(item, db: sqlite_usearch_impl.SQLiteUsearchDB):
     # Process each chunk
     try:
         while offset < fileLengthSeconds:
-            chunks = analyze.get_raw_audio_from_file(fpath, offset, duration)
+            chunks = get_raw_audio_from_file(fpath, offset, duration)
             start, end = offset, cfg.SIG_LENGTH + offset
             samples = []
             timestamps = []
@@ -83,9 +80,7 @@ def analyze_file(item, db: sqlite_usearch_impl.SQLiteUsearchDB):
                     s_start, s_end = timestamps[i]
 
                     # Check if embedding already exists
-                    existing_embedding = db.get_embeddings_by_source(
-                        DATASET_NAME, source_id, np.array([s_start, s_end])
-                    )
+                    existing_embedding = db.get_embeddings_by_source(DATASET_NAME, source_id, np.array([s_start, s_end]))
 
                     if existing_embedding.size == 0:
                         # Get prediction
@@ -112,53 +107,28 @@ def analyze_file(item, db: sqlite_usearch_impl.SQLiteUsearchDB):
         return
 
     delta_time = (datetime.datetime.now() - start_time).total_seconds()
-    print("Finished {} in {:.2f} seconds".format(fpath, delta_time), flush=True)
-
-
-def get_database(db_path: str):
-    """Get the database object. Creates or opens the databse.
-    Args:
-        db: The path to the database.
-    Returns:
-        The database object.
-    """
-
-    if not os.path.exists(db_path):
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        db = sqlite_usearch_impl.SQLiteUsearchDB.create(
-            db_path=db_path,
-            usearch_cfg=sqlite_usearch_impl.get_default_usearch_config(embedding_dim=1024),  # TODO dont hardcode this
-        )
-        return db
-    return sqlite_usearch_impl.SQLiteUsearchDB.create(db_path=db_path)
+    print(f"Finished {fpath} in {delta_time:.2f} seconds", flush=True)
 
 
 def check_database_settings(db: sqlite_usearch_impl.SQLiteUsearchDB):
     try:
         settings = db.get_metadata("birdnet_analyzer_settings")
-        if (
-            settings["BANDPASS_FMIN"] != cfg.BANDPASS_FMIN
-            or settings["BANDPASS_FMAX"] != cfg.BANDPASS_FMAX
-            or settings["AUDIO_SPEED"] != cfg.AUDIO_SPEED
-        ):
+        if settings["BANDPASS_FMIN"] != cfg.BANDPASS_FMIN or settings["BANDPASS_FMAX"] != cfg.BANDPASS_FMAX or settings["AUDIO_SPEED"] != cfg.AUDIO_SPEED:
             raise ValueError(
-                "Database settings do not match current configuration. DB Settings are: fmin: {}, fmax: {}, audio_speed: {}".format(
-                    settings["BANDPASS_FMIN"], settings["BANDPASS_FMAX"], settings["AUDIO_SPEED"]
-                )
+                "Database settings do not match current configuration. DB Settings are: fmin:"
+                + f"{settings['BANDPASS_FMIN']}, fmax: {settings['BANDPASS_FMAX']}, audio_speed: {settings['AUDIO_SPEED']}"
             )
     except KeyError:
-        settings = ConfigDict(
-            {"BANDPASS_FMIN": cfg.BANDPASS_FMIN, "BANDPASS_FMAX": cfg.BANDPASS_FMAX, "AUDIO_SPEED": cfg.AUDIO_SPEED}
-        )
+        settings = ConfigDict({"BANDPASS_FMIN": cfg.BANDPASS_FMIN, "BANDPASS_FMAX": cfg.BANDPASS_FMAX, "AUDIO_SPEED": cfg.AUDIO_SPEED})
         db.insert_metadata("birdnet_analyzer_settings", settings)
         db.commit()
 
 
-def run(input, database, overlap, audio_speed, fmin, fmax, threads, batchsize):
+def run(audio_input, database, overlap, audio_speed, fmin, fmax, threads, batchsize):
     ### Make sure to comment out appropriately if you are not using args. ###
 
     # Set input and output path
-    cfg.INPUT_PATH = input
+    cfg.INPUT_PATH = audio_input
 
     # Parse input files
     if os.path.isdir(cfg.INPUT_PATH):

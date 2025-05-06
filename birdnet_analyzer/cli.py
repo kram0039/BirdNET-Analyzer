@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 import argparse
 import os
 
@@ -30,7 +31,7 @@ ASCII_LOGO = r"""
                                                  **=====        
                                                ***+==           
                                               ****+             
-"""
+""" # noqa: W291
 
 
 def io_args():
@@ -44,7 +45,7 @@ def io_args():
     """
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument(
-        "input",
+        "audio_input",
         metavar="INPUT",
         help="Path to input file or folder.",
     )
@@ -248,25 +249,26 @@ def locale_args():
     return p
 
 
-def bs_args():
+def bs_args(default=cfg.BATCH_SIZE):
     """
     Creates an argument parser for batch size configuration.
     Returns:
         argparse.ArgumentParser: An argument parser with a batch size argument.
     The parser includes the following argument:
-        -b, --batchsize: An integer specifying the number of samples to process at the same time.
+        -b, --batch_size: An integer specifying the number of samples to process at the same time.
                          The value must be at least 1. Defaults to the value of cfg.BATCH_SIZE.
     """
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument(
         "-b",
-        "--batchsize",
+        "--batch_size",
         type=lambda a: max(1, int(a)),
-        default=cfg.BATCH_SIZE,
+        default=default,
         help="Number of samples to process at the same time.",
     )
 
     return p
+
 
 def db_args():
     """
@@ -284,6 +286,7 @@ def db_args():
     )
 
     return p
+
 
 def analyzer_parser():
     """
@@ -360,7 +363,7 @@ def analyzer_parser():
         type=lambda a: max(1, int(a)),
         help="Saves only the top N predictions for each segment independent of their score. Threshold will be ignored.",
     )
-    
+
     parser.add_argument(
         "--merge_consecutive",
         type=int,
@@ -387,14 +390,7 @@ def embeddings_parser():
         argparse.ArgumentParser: Configured argument parser for extracting feature embeddings.
     """
 
-    parents = [
-        db_args(),
-        bandpass_args(),
-        audio_speed_args(), 
-        overlap_args(), 
-        threads_args(), 
-        bs_args()
-    ]
+    parents = [db_args(), bandpass_args(), audio_speed_args(), overlap_args(), threads_args(), bs_args()]
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -404,10 +400,12 @@ def embeddings_parser():
     parser.add_argument(
         "-i",
         "--input",
+        dest="audio_input",
         help="Path to input file or folder.",
     )
 
     return parser
+
 
 def search_parser():
     """
@@ -427,39 +425,27 @@ def search_parser():
 
     parents = [overlap_args(), db_args()]
 
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        parents=parents
-    )
-    parser.add_argument(
-        "-q",
-        "--queryfile",
-        help="Path to the query file."
-    )
-    parser.add_argument(
-        "-o",
-        "--output",
-        help="Path to the output folder."
-    )
-    parser.add_argument(
-        "--n_results",
-        default=10,
-        help="Number of results to return."
-    )
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, parents=parents)
+    parser.add_argument("-q", "--queryfile", help="Path to the query file.")
+    parser.add_argument("-o", "--output", help="Path to the output folder.")
+    parser.add_argument("--n_results", default=10, help="Number of results to return.")
 
     # TODO: use choice argument.
     parser.add_argument(
         "--score_function",
         default="cosine",
-        help="Scoring function to use. Choose 'cosine', 'euclidean' or 'dot'. Defaults to 'cosine'."
+        choices=["cosine", "euclidean", "dot"],
+        help="Scoring function to use. Choose 'cosine', 'euclidean' or 'dot'. Defaults to 'cosine'.",
     )
     parser.add_argument(
         "--crop_mode",
         default=cfg.SAMPLE_CROP_MODE,
+        choices=["center", "first", "segments"],
         help="Crop mode for the query sample. Can be 'center', 'first' or 'segments'.",
     )
 
     return parser
+
 
 def client_parser():
     """
@@ -510,7 +496,7 @@ def segments_parser():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         parents=[audio_speed_args(), threads_args(), min_conf_args()],
     )
-    parser.add_argument("input", metavar="INPUT", help="Path to folder containing audio files.")
+    parser.add_argument("audio_input", metavar="INPUT", help="Path to folder containing audio files.")
     parser.add_argument("-r", "--results", help="Path to folder containing result files. Defaults to the `input` path.")
     parser.add_argument(
         "-o", "--output", help="Output folder path for extracted segments. Defaults to the `input` path."
@@ -603,6 +589,7 @@ def train_parser():
             bandpass_args(),
             audio_speed_args(),
             threads_args(),
+            bs_args(cfg.TRAIN_BATCH_SIZE),
             overlap_args(help_string="Overlap of training data segments in seconds if crop_mode is 'segments'."),
         ],
     )
@@ -612,14 +599,18 @@ def train_parser():
         else os.path.join(SCRIPT_DIR, "checkpoints/custom/Custom_Classifier")
     )
     parser.add_argument(
-        "input",
+        "audio_input",
         metavar="INPUT",
         help="Path to training data folder. Subfolder names are used as labels.",
     )
     parser.add_argument(
+        "--test_data", help="Path to test data folder. If not specified, a random validation split will be used."
+    )
+    parser.add_argument(
         "--crop_mode",
         default=cfg.SAMPLE_CROP_MODE,
-        help="Crop mode for training data. Can be 'center', 'first' or 'segments'.",
+        choices=["center", "first", "segments", "smart"],
+        help="Crop mode for training data. Can be 'center', 'first', 'segments' or 'smart'.",
     )
     parser.add_argument("-o", "--output", default=c, help="Path to trained classifier model output.")
     parser.add_argument(
@@ -628,18 +619,34 @@ def train_parser():
         default=cfg.TRAIN_EPOCHS,
         help="Number of training epochs.",
     )
-    parser.add_argument("--batch_size", type=int, default=cfg.TRAIN_BATCH_SIZE, help="Batch size.")
     parser.add_argument(
         "--val_split",
         type=float,
         default=cfg.TRAIN_VAL_SPLIT,
-        help="Validation split ratio.",
+        help="Validation split ratio. Will be ignored if test_data is set.",
     )
     parser.add_argument(
         "--learning_rate",
         type=float,
         default=cfg.TRAIN_LEARNING_RATE,
         help="Learning rate.",
+    )
+    parser.add_argument(
+        "--focal-loss",
+        action="store_true",
+        help="Use focal loss for training (helps with imbalanced classes and hard examples).",
+    )
+    parser.add_argument(
+        "--focal-loss-gamma",
+        default=cfg.FOCAL_LOSS_GAMMA,
+        type=float,
+        help="Focal loss gamma parameter (focusing parameter). Higher values give more weight to hard examples.",
+    )
+    parser.add_argument(
+        "--focal-loss-alpha",
+        default=cfg.FOCAL_LOSS_ALPHA,
+        type=float,
+        help="Focal loss alpha parameter (balancing parameter). Controls weight between positive and negative examples.",
     )
     parser.add_argument(
         "--hidden_units",
@@ -651,8 +658,9 @@ def train_parser():
         "--dropout",
         type=lambda a: min(max(0, float(a)), 0.9),
         default=cfg.TRAIN_DROPOUT,
-        help="Dropout rate.",
+        help="Dropout rate. Higher values result in more regularization. Values in [0.0, 0.9].",
     )
+    parser.add_argument("--label_smoothing", action="store_true", help="Whether to use label smoothing for training.")
     parser.add_argument("--mixup", action="store_true", help="Whether to use mixup for training.")
     parser.add_argument(
         "--upsampling_ratio",
@@ -663,7 +671,7 @@ def train_parser():
     parser.add_argument(
         "--upsampling_mode",
         default=cfg.UPSAMPLING_MODE,
-        choices=["repeat", "mean", "smote"],
+        choices=["repeat", "linear", "mean", "smote"],
         help="Upsampling mode.",
     )
     parser.add_argument(
