@@ -405,23 +405,28 @@ class DataProcessor:
             meta = meta[~(bad_lat | bad_lon)]
             gr.Warning(f"Removed {len(bad_rows)} rows with invalid coordinates from metadata.")
 
-        # ── 4. Duplicate / inconsistent site IDs ─────────────────────────────────
-        meta["lat_round"] = meta["latitude"].round(5)
-        meta["lon_round"] = meta["longitude"].round(5)
+        # ── 4. Duplicate / inconsistent site IDs ────────────────────────────────
+        # Use an absolute tolerance instead of rounding
+        TOL = 1e-5              # ≈ 1 metre in latitude / longitude
 
-        dups = meta[meta.duplicated(subset=["site_name"], keep=False)]
+        dups = meta[meta.duplicated('site_name', keep=False)]
         inconsistent_sites_to_remove: set[str] = set()
-        consistent_duplicate_count = 0  # Keep track for potential logging if needed
+        consistent_duplicate_count = 0
+
+        def coords_consistent(grp, tol=TOL) -> bool:
+            """True if all coords in *grp* are within *tol* of one another."""
+            lat_ok = grp['latitude'].max() - grp['latitude'].min() < tol
+            lon_ok = grp['longitude'].max() - grp['longitude'].min() < tol
+            return lat_ok and lon_ok
 
         if not dups.empty:
-            for site, grp in dups.groupby("site_name"):
-                # Check if all rounded coordinates within the group are the same
-                if grp[['lat_round', 'lon_round']].nunique().max() > 1:
-                    # Inconsistent coordinates found for this site ID
-                    inconsistent_sites_to_remove.add(site)
-                else:
-                    # Consistent coordinates, count duplicates beyond the first
+            for site, grp in dups.groupby('site_name'):
+                if coords_consistent(grp):
+                    # same spot → keep one copy
                     consistent_duplicate_count += len(grp) - 1
+                else:
+                    # coordinates differ by > tol → drop everything for this site
+                    inconsistent_sites_to_remove.add(site)
 
         if inconsistent_sites_to_remove:
             msg = (

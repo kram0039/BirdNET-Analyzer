@@ -1017,7 +1017,7 @@ def build_visualization_tab():
                             label += " (Decimal Degrees)"
                         metadata_columns[col] = gr.Dropdown(choices=[], label=label)
 
-        load_data_btn = gr.Button("Load / Refresh data", variant="huggingface", elem_id="viz_load_refresh_data_btn") # Changed variant to huggingface
+        load_data_btn = gr.Button("Load Data", variant="huggingface", elem_id="viz_load_refresh_data_btn") # Changed variant to huggingface
 
         with gr.Group(visible=True) as selection_group:
             with gr.Accordion(loc.localize("viz-tab-class-recording-accordion-label"), open=False):
