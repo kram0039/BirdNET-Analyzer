@@ -33,6 +33,7 @@ class TemporalScatterPlotter:
         
         # Extract date and time components for plotting
         self.data['date'] = self.data['prediction_time'].dt.date
+        self.data['time_str'] = self.data['prediction_time'].dt.strftime('%H:%M') # Added for HH:MM hover
         
         # Convert time to decimal hours for plotting (e.g. 14:30 = 14.5)
         self.data['decimal_time'] = (self.data['prediction_time'].dt.hour + 
@@ -82,7 +83,7 @@ class TemporalScatterPlotter:
             color=self.class_col,
             color_discrete_map=color_map,
             category_orders={self.class_col: all_classes},  # Explicitly set order
-            hover_data=[self.class_col, self.conf_col],
+            hover_data=['time_str', self.class_col, self.conf_col], # Updated hover_data
             opacity=0.3,
             title=title
         )
@@ -91,9 +92,9 @@ class TemporalScatterPlotter:
         for trace in fig.data:
             trace.hovertemplate = (
                 "Date: %{x|%Y-%m-%d}<br>" +
-                "Time: %{y:.2f} hrs<br>" +
-                "Species: %{customdata[0]}<br>" +
-                "Confidence: %{customdata[1]:.3f}<br>" +
+                "Time: %{customdata[0]}<br>" +      # Use time_str from customdata
+                "Species: %{customdata[1]}<br>" +   # class_col from customdata
+                "Confidence: %{customdata[2]:.3f}<br>" + # conf_col from customdata
                 "<extra></extra>"
             )
         
@@ -179,29 +180,36 @@ class TemporalScatterPlotter:
             # ── 3.  Collect sunrise/sunset decimal-hours ───────────────────
             sunrise_x, sunrise_y = [], []
             sunset_x,  sunset_y  = [], []
+            sunrise_customdata, sunset_customdata = [], [] # Added for hover text
 
             for d in calc_days:
                 s = sun(site.observer, date=d, tzinfo=tz)  # tz-aware dt
 
-                for key, x_list, y_list in (("sunrise", sunrise_x, sunrise_y),
-                                            ("sunset",  sunset_x,  sunset_y )):
+                for key, x_list, y_list, custom_list in (("sunrise", sunrise_x, sunrise_y, sunrise_customdata),
+                                                          ("sunset",  sunset_x,  sunset_y,  sunset_customdata)):
                     t_local = s[key].astimezone(tz)        # local wall-clock
+                    time_str_formatted = t_local.strftime('%H:%M') # Formatted time
                     dec = (t_local.hour +
                            t_local.minute / 60 +
                            t_local.second / 3600)
                     x_list.append(d)
                     y_list.append(dec)
+                    custom_list.append([time_str_formatted]) # Add to customdata list
 
             # ── 4.  Plot lines ─────────────────────────────────────────────
             line_style = dict(color="purple", width=2)
 
             fig.add_trace(go.Scatter(
                 x=sunrise_x, y=sunrise_y, mode="lines",
-                line=line_style, name="Sunrise"
+                line=line_style, name="Sunrise",
+                customdata=sunrise_customdata,
+                hovertemplate="Date: %{x|%Y-%m-%d}<br>Sunrise: %{customdata[0]}<br><extra></extra>"
             ))
             fig.add_trace(go.Scatter(
                 x=sunset_x,  y=sunset_y,  mode="lines",
-                line=line_style, name="Sunset"
+                line=line_style, name="Sunset",
+                customdata=sunset_customdata,
+                hovertemplate="Date: %{x|%Y-%m-%d}<br>Sunset: %{customdata[0]}<br><extra></extra>"
             ))
 
         except ImportError as e:

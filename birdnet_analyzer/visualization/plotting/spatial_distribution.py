@@ -190,10 +190,11 @@ class SpatialDistributionPlotter:
                 )
             else:
                 fig.data[i].hovertemplate = (
-                    f"{site_col}: %{{customdata[0]}}<br>" # Use standard Site name
+                    f"Species: {trace.name}<br>" + # Added Species
+                    f"{site_col}: %{{customdata[0]}}<br>" 
                     "Count: %{customdata[1]}<br>"
-                    f"{lat_col}: %{{lat:.2f}}<br>"       # Use standard Latitude name
-                    f"{lon_col}: %{{lon:.2f}}<br>"       # Use standard Longitude name
+                    f"{lat_col}: %{{lat:.2f}}<br>"
+                    f"{lon_col}: %{{lon:.2f}}<br>"
                     "<extra></extra>"
                 )
 

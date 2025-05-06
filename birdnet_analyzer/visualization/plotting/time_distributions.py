@@ -54,10 +54,11 @@ class TimeDistributionPlotter:
             raise ValueError(f"Missing required columns for time period '{time_period}': {', '.join(missing_cols)}")
 
         if time_period == 'hour':
-            # Group by Year, Month, Day, Hour - then group result by Hour
-            return (cls_data.groupby(['Year', 'Month', 'Day', 'Hour'])
-                   .size().reset_index(name='count')
-                   .groupby('Hour'))
+            # Group by Year, Month, Day, Hour - then group result by Hour (formatted string)
+            df = (cls_data.groupby(['Year', 'Month', 'Day', 'Hour'])
+                  .size().reset_index(name='count'))
+            df['Hour_display'] = df['Hour'].apply(lambda h: f"{h:02d}:00")
+            return df.groupby('Hour_display')
         elif time_period == 'day':
             # Map numeric weekday to name before grouping
             cls_data['weekday_name'] = cls_data['prediction_weekday'].map(self.weekday_map)
@@ -72,11 +73,14 @@ class TimeDistributionPlotter:
             return (cls_data.groupby(['Year', 'month_name'])
                    .size().reset_index(name='count')
                    .groupby('month_name'))
-        else:  # year
-            # Group by Year, Month, Day - then group result by Year
-            return (cls_data.groupby(['Year', 'Month', 'Day'])
-                   .size().reset_index(name='count')
-                   .groupby('Year'))
+        elif time_period == 'year': # Changed from else to elif
+            # Group by Year, Month, Day - then group result by Year (as string)
+            df = (cls_data.groupby(['Year', 'Month', 'Day'])
+                  .size().reset_index(name='count'))
+            df['Year_display'] = df['Year'].astype(str)
+            return df.groupby('Year_display')
+        else: # Add a final else to catch unexpected time_period values
+            raise ValueError(f"Unhandled time period: {time_period}")
 
     def plot_distribution(self, time_period: str, use_boxplot: bool = False, title: str = None) -> go.Figure:
         """Plot species counts distribution over the specified time period."""
@@ -130,66 +134,59 @@ class TimeDistributionPlotter:
         color_map = self._get_color_map(classes)
 
         if use_boxplot:
-            # Offset boxplots for each class to avoid overlap
-            num_classes = len(classes)
-            offsets = np.linspace(-0.3, 0.3, num_classes)
-
+            # For grouped box plots, Plotly handles offsets if x is categorical and boxmode='group'
             for i, cls in enumerate(classes):
-                cls_data = self.data[self.data[self.class_col] == cls].copy()  # Use copy to avoid SettingWithCopyWarning
+                cls_data = self.data[self.data[self.class_col] == cls].copy()
 
-                # Prepare data for boxplot
-                period_values = []
-                y_values = []
-                x_positions = []
+                y_values_for_species = []
+                x_categories_for_species = [] # Store textual categories
 
-                # Get data for each period
                 agg_data_grouped = self._aggregate_by_period(cls_data, time_period)
 
-                for j, period in enumerate(x_values):
-                    # Find data for current period
-                    if period in agg_data_grouped.groups:
-                        period_counts = agg_data_grouped.get_group(period)['count'].values
+                # x_text contains the ordered list of category names (e.g., ['00:00', '01:00', ...] or ['Monday', ...])
+                for period_name_text in x_text:
+                    if period_name_text in agg_data_grouped.groups:
+                        period_counts = agg_data_grouped.get_group(period_name_text)['count'].values
                         if len(period_counts) > 0:
-                            # Store data for boxplot
-                            period_values.extend([str(period)] * len(period_counts))
-                            y_values.extend(period_counts)
-                            # Calculate offset position
-                            x_positions.extend([j + offsets[i]] * len(period_counts))
-
-                if len(period_values) > 0:
-                    # Convert color to rgba format
+                            y_values_for_species.extend(period_counts)
+                            x_categories_for_species.extend([period_name_text] * len(period_counts))
+                
+                if y_values_for_species:
                     color = color_map.get(cls)
-                    rgba_color = self._color_to_rgba(color, 0.5)
+                    rgba_color = self._color_to_rgba(color, 0.6) # Adjusted alpha for better visibility
 
-                    # Create a single boxplot for this class with custom positions
                     fig.add_trace(go.Box(
-                        x=x_positions,
-                        y=y_values,
+                        y=y_values_for_species,
+                        x=x_categories_for_species, # Use textual categories for x
                         name=str(cls),
                         marker_color=color,
-                        boxpoints='outliers',  # Show outliers
-                        jitter=0.3,           # Add jitter to points
-                        pointpos=0,           # Offset of points from box
-                        line=dict(width=2),   # Box line width
-                        fillcolor=rgba_color,  # Use properly converted color
+                        boxpoints='outliers',
+                        jitter=0.3,
+                        pointpos=0, # Outliers relative to box
+                        line=dict(width=1),
+                        fillcolor=rgba_color,
+                        hoveron='boxes', # Added to disable hover for outliers
                         hovertemplate=(
-                            "Species: " + str(cls) + "<br>" +
-                            "Period: " + str(period) + "<br>" +  # Add period info to hover
-                            "Count: %{y}<br>" +
-                            "Median: %{median}<br>" +
-                            "Q1: %{q1}<br>" +
-                            "Q3: %{q3}<br>" +
+                            f"Species: %{{name}}<br>" +
+                            f"{x_title}: %{{x}}<br>" + # %{x} will now be the textual category
+                            "Median: %{median:.2f}<br>" +
+                            "Q1: %{q1:.2f}<br>" +
+                            "Q3: %{q3:.2f}<br>" +
+                            "Min: %{lowerfence:.2f}<br>" + # Using lowerfence for robust min
+                            "Max: %{upperfence:.2f}<br>" + # Using upperfence for robust max
                             "<extra></extra>"
                         )
                     ))
-
-            # Set custom x-axis ticks and labels
+            
+            # Layout updates for boxplot mode
             fig.update_layout(
+                boxmode='group', # Key for grouped box plots
                 xaxis=dict(
-                    tickmode='array',
-                    tickvals=list(range(len(x_text))),
-                    ticktext=x_text
+                    categoryorder='array', # Ensure x-axis categories follow the order in x_text
+                    categoryarray=x_text,
+                    title_text=x_title # Explicitly set x_title here
                 )
+                # yaxis_title='Count' will be set in the common layout update section
             )
         else:
             # Original histogram plotting logic
@@ -198,9 +195,10 @@ class TimeDistributionPlotter:
                 grouped = self._aggregate_by_period(cls_data, time_period)
 
                 counts = []
-                for val in x_values:
-                    count = (grouped.get_group(val)['count'].sum()
-                            if val in grouped.groups else 0)
+                # Iterate over x_text (string labels) which match the keys in `grouped`
+                for text_val in x_text: 
+                    count = (grouped.get_group(text_val)['count'].sum()
+                            if text_val in grouped.groups else 0)
                     counts.append(count)
 
                 fig.add_trace(go.Bar(
@@ -217,13 +215,15 @@ class TimeDistributionPlotter:
                     )
                 ))
 
-        # Update layout
-        plot_type = "Boxplots" if use_boxplot else "Distribution"
+            # Specific layout for bar charts (barmode)
+            fig.update_layout(barmode='group', xaxis_title=x_title)
+
+        # Update layout (common for both boxplot and histogram)
+        plot_type_title = "Boxplots" if use_boxplot else "Distribution"
+        final_title = title or f'Species {plot_type_title} by {x_title}'
+        
         fig.update_layout(
-            barmode='group' if not use_boxplot else None,
-            boxmode='group' if use_boxplot else None,
-            title=title or f'Species {plot_type} by {x_title}',
-            xaxis_title=x_title,
+            title=final_title,
             yaxis_title='Count',
             legend_title='Species',
             legend=dict(x=1.02, y=1),
