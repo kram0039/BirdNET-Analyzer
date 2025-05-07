@@ -75,13 +75,13 @@ def build_visualization_tab():
         "Class": "Common Name",
         "Recording": "Begin Path",
         "Confidence": "Confidence",
-        "Correctness": "correctness",
+        "Correctness": "Correctness",
     }
 
     metadata_default_columns = {
-        "Site": "Site",
-        "X": "lat",
-        "Y": "lon",
+        "Site": "SiteID",
+        "X": "Latitude",
+        "Y": "Longitude",
     }
 
     localized_column_labels = {

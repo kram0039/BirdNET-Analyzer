@@ -407,7 +407,7 @@ class DataProcessor:
 
         # ── 4. Duplicate / inconsistent site IDs ────────────────────────────────
         # Use an absolute tolerance instead of rounding
-        TOL = 1e-5              # ≈ 1 metre in latitude / longitude
+        TOL = 5e-5              # ≈ 5 metre in latitude / longitude
 
         dups = meta[meta.duplicated('site_name', keep=False)]
         inconsistent_sites_to_remove: set[str] = set()
