@@ -13,6 +13,8 @@ import gradio as gr
 if typing.TYPE_CHECKING:
     from birdnet_analyzer.visualization.data_processor import DataProcessor
 
+NO_SITE_LABEL = "[No Site Assigned]"
+
 @dataclass
 class ProcessorState:
     """State of the DataProcessor."""

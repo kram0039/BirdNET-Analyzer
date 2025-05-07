@@ -24,13 +24,14 @@ from birdnet_analyzer.visualization.plotting.temporal_scatter import TemporalSca
 from birdnet_analyzer.visualization.plotting.spatial_distribution import SpatialDistributionPlotter
 from birdnet_analyzer.visualization.detection_counts import calculate_detection_counts
 
-from birdnet_analyzer.visualization.common import ProcessorState, convert_timestamp_to_datetime
+from birdnet_analyzer.visualization.common import ProcessorState, convert_timestamp_to_datetime, NO_SITE_LABEL
 from birdnet_analyzer.visualization.caching import (
     fingerprint_prediction_dir, fingerprint_metadata_file,
 )
 
 _PROCESSOR_CACHE: dict[str, dp.DataProcessor] = {}
 _METADATA_CACHE: dict[str, pd.DataFrame] = {}
+
 
 def get_date_range(df: pd.DataFrame) -> tuple:
     """Get the earliest and latest dates from the 'Date' column."""
@@ -51,6 +52,13 @@ def get_date_range(df: pd.DataFrame) -> tuple:
     except Exception as e:
         print(f"Error getting date range: {e}")
         return None, None
+
+
+def _process_selected_sites_for_filtering(selected_sites_list: typing.Optional[typing.List[typing.Any]]) -> typing.Optional[typing.List[typing.Any]]:
+    if selected_sites_list is None:
+        return None
+    return [None if site == NO_SITE_LABEL else site for site in selected_sites_list]
+
 
 def build_visualization_tab():
     """
@@ -475,11 +483,33 @@ def build_visualization_tab():
         if not proc_state or not proc_state.processor or proc_state.processor.complete_df.empty:
             return (gr.update(choices=[], value=[]), [])
 
-        if 'Site' in proc_state.processor.complete_df.columns:
-            sites = sorted(proc_state.processor.complete_df['Site'].dropna().unique())
-            return (gr.update(choices=sites, value=sites), sites)
-        else:
-            return (gr.update(choices=[],   value=[]),   [])
+        if 'Site' not in proc_state.processor.complete_df.columns:
+            return (gr.update(choices=[], value=[]), [])
+
+        unique_sites_from_df = proc_state.processor.complete_df['Site'].unique()
+        
+        gradio_choices = []
+        # Add actual sites, sorted alphabetically
+        actual_sites = sorted(
+            list(set(str(s).strip() for s in unique_sites_from_df if pd.notna(s) and str(s).strip()))
+        )
+        for site_str in actual_sites:
+            gradio_choices.append((site_str, site_str)) # (value, label)
+
+        # Check if there are any sites that are None/NaN
+        has_null_equivalent_sites = any(pd.isna(s) for s in unique_sites_from_df)
+        
+        if has_null_equivalent_sites:
+            # Add the "No Site Assigned" option, ensuring it's consistently placed (e.g., at the end)
+            gradio_choices.append((NO_SITE_LABEL, NO_SITE_LABEL)) # value is NO_SITE_LABEL, label is the text
+
+        # Default selection: select all, including the "No Site Assigned" if present
+        default_selected_values = [choice[0] for choice in gradio_choices]
+        
+        # The sites_full_list_state should store the values that can be directly used for selection
+        full_list_for_state = default_selected_values.copy()
+
+        return (gr.update(choices=gradio_choices, value=default_selected_values), full_list_for_state)
 
     def combine_time_components(hour, minute) -> typing.Optional[datetime.time]:
         if hour is None or minute is None:
@@ -523,11 +553,13 @@ def build_visualization_tab():
         time_start = combine_time_components(time_start_hour, time_start_minute)
         time_end = combine_time_components(time_end_hour, time_end_minute)
 
+        processed_selected_sites = _process_selected_sites_for_filtering(selected_sites_list)
+
         try:
             filtered_df = processor.get_filtered_data(
                 selected_classes=selected_classes_list,
                 selected_recordings=selected_recordings_list,
-                selected_sites=selected_sites_list,
+                selected_sites=processed_selected_sites,
                 date_range_start=date_range_start,
                 date_range_end=date_range_end,
                 time_start=time_start,
@@ -583,11 +615,13 @@ def build_visualization_tab():
         time_start = combine_time_components(time_start_hour, time_start_minute)
         time_end = combine_time_components(time_end_hour, time_end_minute)
 
+        processed_selected_sites = _process_selected_sites_for_filtering(selected_sites_list)
+
         try:
             filtered_df = processor.get_filtered_data(
                 selected_classes=selected_classes_list,
                 selected_recordings=selected_recordings_list,
-                selected_sites=selected_sites_list,
+                selected_sites=processed_selected_sites,
                 date_range_start=date_range_start,
                 date_range_end=date_range_end,
                 time_start=time_start,
@@ -677,10 +711,12 @@ def build_visualization_tab():
             time_start = combine_time_components(time_start_hour, time_start_minute)
             time_end = combine_time_components(time_end_hour, time_end_minute)
 
+            processed_selected_sites = _process_selected_sites_for_filtering(selected_sites_list)
+
             filtered_df = processor.get_filtered_data(
                 selected_classes=selected_classes_list,
                 selected_recordings=selected_recordings_list,
-                selected_sites=selected_sites_list,
+                selected_sites=processed_selected_sites,
                 date_range_start=date_range_start,
                 date_range_end=date_range_end,
                 time_start=time_start,
@@ -764,11 +800,13 @@ def build_visualization_tab():
         time_start = combine_time_components(time_start_hour, time_start_minute)
         time_end = combine_time_components(time_end_hour, time_end_minute)
 
+        processed_selected_sites = _process_selected_sites_for_filtering(selected_sites_list)
+
         try:
             filtered_df = processor.get_filtered_data(
                 selected_classes=selected_classes_list,
                 selected_recordings=selected_recordings_list,
-                selected_sites=selected_sites_list,
+                selected_sites=processed_selected_sites,
                 date_range_start=date_range_start,
                 date_range_end=date_range_end,
                 time_start=time_start,
@@ -829,11 +867,13 @@ def build_visualization_tab():
         time_start = combine_time_components(time_start_hour, time_start_minute)
         time_end = combine_time_components(time_end_hour, time_end_minute)
 
+        processed_selected_sites = _process_selected_sites_for_filtering(selected_sites_list)
+
         try:
             filtered_df = processor.get_filtered_data(
                 selected_classes=selected_classes_list,
                 selected_recordings=selected_recordings_list,
-                selected_sites=selected_sites_list,
+                selected_sites=processed_selected_sites,
                 date_range_start=date_range_start,
                 date_range_end=date_range_end,
                 time_start=time_start,

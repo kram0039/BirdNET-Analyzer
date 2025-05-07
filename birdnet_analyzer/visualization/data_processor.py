@@ -685,7 +685,7 @@ class DataProcessor:
         self,
         selected_classes: Optional[List[str]] = None,
         selected_recordings: Optional[List[str]] = None,
-        selected_sites: Optional[List[str]] = None,
+        selected_sites: Optional[List[Any]] = None, # Allow Any type for None
         date_range_start: Optional[Any] = None,
         date_range_end: Optional[Any] = None,
         time_start: Optional[datetime.time] = None,
@@ -700,7 +700,7 @@ class DataProcessor:
         Args:
             selected_classes: List of classes to include.
             selected_recordings: List of recording filenames (without extension) to include.
-            selected_sites: List of site names to include.
+            selected_sites: List of site names to include. Can contain None to filter for null sites.
             date_range_start: Start date for filtering (inclusive).
             date_range_end: End date for filtering (inclusive).
             time_start: Start time of day for filtering (inclusive).
@@ -730,8 +730,29 @@ class DataProcessor:
 
         if selected_sites:
             if 'Site' in df.columns:
-                norm_selected_sites = {site.strip() for site in selected_sites if site}
-                df = df[df['Site'].isin(norm_selected_sites)]
+                filter_for_null_sites = None in selected_sites
+                # Convert actual site names to string for consistent matching, excluding None
+                actual_site_names = {str(site).strip() for site in selected_sites if site is not None}
+
+                conditions = []
+                if actual_site_names:
+                    # Filter by actual site names. Ensure df['Site'] is also treated as string for comparison.
+                    # NaNs in df['Site'] will become 'nan' string here, which is fine as actual_site_names won't contain pd.NA or float nan.
+                    conditions.append(df['Site'].astype(str).isin(actual_site_names))
+                
+                if filter_for_null_sites:
+                    conditions.append(df['Site'].isna())
+                
+                if conditions:
+                    combined_mask = pd.Series(False, index=df.index)
+                    for cond in conditions:
+                        combined_mask |= cond
+                    df = df[combined_mask]
+                elif not actual_site_names and not filter_for_null_sites: # e.g. selected_sites was an empty list
+                    pass # No site filter to apply if list was empty after processing
+                elif not conditions: # e.g. selected_sites was [None] but no null sites, or ["KnownSite"] but no such site
+                    df = df.iloc[0:0] # Return empty DataFrame if no conditions matched
+
             else:
                 print("Warning: 'Site' column not found for filtering.")
 
