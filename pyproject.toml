@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "librosa",
     "resampy",
+    "tensorflow==2.15.1",
     "scikit-learn==1.6.1",
     "tqdm",
     "pandas",
@@ -30,10 +31,7 @@ dependencies = [
     "seaborn",
     "astral",
     "openpyxl",
-    "timezonefinder",
-    "tensorflow==2.15.1; sys_platform == 'win32'",
-    "tensorflow-macos==2.15.0; sys_platform == 'darwin'",
-    "tensorflow==2.15.1; sys_platform != 'win32' and sys_platform != 'darwin'"
+    "timezonefinder"
 ]
 
 [project.optional-dependencies]
