@@ -27,7 +27,7 @@ if utils.FROZEN:
 
     APPDIR.mkdir(parents=True, exist_ok=True)
 
-    sys.stderr = sys.stdout = open(str(APPDIR / "logs.txt"), "a")  # noqa: SIM115
+    sys.stderr = sys.stdout = open(str(APPDIR / "logs.txt"), "a", encoding="utf-8")  # noqa: SIM115
     cfg.ERROR_LOG_FILE = str(APPDIR / os.path.basename(cfg.ERROR_LOG_FILE))
 
 import birdnet_analyzer.gui.localization as loc
