@@ -998,6 +998,21 @@ def build_visualization_tab():
             gr.Error(f"Error loading thresholds from JSON: {str(e)}")
             return proc_state, gr.update()
 
+    def update_thresholds_by_slider(proc_state: ProcessorState, slider_val):
+        """
+        When the global slider moves, overwrite *every* class-specific
+        threshold with `slider_val` and refresh the read-only table.
+        """
+        if proc_state and proc_state.class_thresholds is not None:
+            proc_state.class_thresholds['Threshold'] = slider_val
+            # return updated state and table
+            return (
+                proc_state,
+                gr.update(value=proc_state.class_thresholds)
+            )
+        # Nothing loaded yet → do nothing
+        return proc_state, gr.update()
+
     with gr.Tab(loc.localize("visualization-tab-title")):
         gr.Markdown(
             """
@@ -1128,6 +1143,16 @@ def build_visualization_tab():
                                 label=loc.localize("viz-tab-end-time-label-minute"),
                                 interactive=True
                             )
+
+                with gr.Row():
+                    confidence_slider = gr.Slider(
+                        minimum=0.01,
+                        maximum=0.99,
+                        value=0.50,  # default requested by user
+                        step=0.01,
+                        label=loc.localize("viz-tab-global-threshold-slider-label"),
+                        info=loc.localize("viz-tab-global-threshold-slider-info"),
+                    )
 
                 with gr.Row():
                      class_thresholds_df = gr.DataFrame(
@@ -1322,6 +1347,13 @@ def build_visualization_tab():
         threshold_template_download_btn.click(
             fn=download_threshold_template,
             inputs=[processor_state]
+        )
+
+        confidence_slider.change(
+            fn=update_thresholds_by_slider,
+            inputs=[processor_state, confidence_slider],
+            outputs=[processor_state, class_thresholds_df],
+            queue=False  # no heavy work, instant update
         )
 
         calculate_detections_btn.click(

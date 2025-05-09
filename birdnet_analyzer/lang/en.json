@@ -383,5 +383,7 @@
     "viz-tab-time-period-label": "Time Period",
     "viz-tab-time-period-info": "Aggregate detections by hour, day, month, or year",
     "viz-tab-use-boxplot-label": "Use Boxplot",
-    "viz-tab-use-boxplot-info": "Display distribution as boxplots instead of counts"
+    "viz-tab-use-boxplot-info": "Display distribution as boxplots instead of counts",
+    "viz-tab-global-threshold-slider-label": "Global confidence threshold",
+    "viz-tab-global-threshold-slider-info": "Move the slider to set the same threshold for every class. Uploading a threshold JSON overrides this value until you change the slider again."
 }
