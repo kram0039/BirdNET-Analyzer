@@ -1165,6 +1165,7 @@ def build_visualization_tab():
                     interactive=True
                 )
 
+        # Moved Warning Message
         gr.Markdown(
             """
             <div style="background-color: #FFF3CD; color: #856404; padding: 10px; margin: 10px 0;
@@ -1175,6 +1176,19 @@ def build_visualization_tab():
               introduce false positives.
             </div>
             """
+        )
+
+        calculate_detections_btn = gr.Button(
+            loc.localize("viz-tab-calculate-detections-button-label"),
+            variant="huggingface"
+        )
+        detections_table = gr.DataFrame(
+            show_label=False,
+            type="pandas",
+            visible=False,
+            interactive=False,
+            wrap=True,
+            column_widths=[200, 110, 80, 130, 90, 150, 110, 110, 80]
         )
 
         plot_predictions_btn = gr.Button(
@@ -1218,19 +1232,6 @@ def build_visualization_tab():
         temporal_scatter_output = gr.Plot(
             label=loc.localize("viz-tab-temporal-scatter-plot-label"),
             visible=False
-        )
-
-        calculate_detections_btn = gr.Button(
-            loc.localize("viz-tab-calculate-detections-button-label"),
-            variant="huggingface"
-        )
-        detections_table = gr.DataFrame(
-            show_label=False,
-            type="pandas",
-            visible=False,
-            interactive=False,
-            wrap=True,
-            column_widths=[200, 110, 80, 130, 90, 150, 110, 110, 80]
         )
 
         def get_selection_func(state_key, on_select):
@@ -1323,6 +1324,24 @@ def build_visualization_tab():
             inputs=[processor_state]
         )
 
+        calculate_detections_btn.click(
+            fn=calculate_detections_action,
+            inputs=[
+                processor_state,
+                select_classes_checkboxgroup,
+                recordings_full_list_state,
+                select_sites_checkboxgroup,
+                date_range_start,
+                date_range_end,
+                time_start_hour,
+                time_start_minute,
+                time_end_hour,
+                time_end_minute,
+                correctness_mode,
+            ],
+            outputs=[detections_table]
+        )
+
         plot_predictions_btn.click(
             fn=plot_predictions_action,
             inputs=[
@@ -1395,24 +1414,6 @@ def build_visualization_tab():
                 correctness_mode
             ],
             outputs=[processor_state, temporal_scatter_output]
-        )
-
-        calculate_detections_btn.click(
-            fn=calculate_detections_action,
-            inputs=[
-                processor_state,
-                select_classes_checkboxgroup,
-                recordings_full_list_state,
-                select_sites_checkboxgroup,
-                date_range_start,
-                date_range_end,
-                time_start_hour,
-                time_start_minute,
-                time_end_hour,
-                time_end_minute,
-                correctness_mode,
-            ],
-            outputs=[detections_table]
         )
 
         classes_select_all_btn.click(
