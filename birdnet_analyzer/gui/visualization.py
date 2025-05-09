@@ -405,7 +405,7 @@ def build_visualization_tab():
         threshold_download_btn_update = gr.update(visible=False)
 
         if proc:
-            default_threshold = 0.1
+            default_threshold = 0.5
             if avail_classes:
                 class_thresholds_init_df = pd.DataFrame({
                     'Class': sorted(list(avail_classes)),
