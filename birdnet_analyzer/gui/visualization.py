@@ -349,7 +349,6 @@ def build_visualization_tab():
         meta_x,
         meta_y,
         current_classes,
-        current_recordings,
     ):
         prediction_dir = ensure_tmp_dir(prediction_files, _prediction_file_cache, prefix="birdnet_pred_")
         metadata_dir = ensure_tmp_dir(metadata_files, _metadata_file_cache, prefix="birdnet_meta_")
@@ -431,7 +430,7 @@ def build_visualization_tab():
             threshold_df_update = gr.update(visible=False, value=None)
 
         new_classes = []
-        new_recordings = []
+        new_recordings = avail_recordings
 
         default_classes = avail_classes
         if len(avail_classes) > MAX_DEFAULT_CLASSES:
@@ -443,24 +442,18 @@ def build_visualization_tab():
 
         if current_classes:
             new_classes = [c for c in current_classes if c in avail_classes]
-        if current_recordings:
-            normalized_current = [str(r).strip() for r in current_recordings if isinstance(r, str)]
-            new_recordings = [r for r in normalized_current if r in avail_recordings]
 
         if not new_classes:
             new_classes = default_classes
-        if not new_recordings:
-            new_recordings = avail_recordings
 
         return (
             gr.update(choices=avail_classes, value=new_classes),
-            gr.update(choices=avail_recordings, value=new_recordings),
             state,
             threshold_df_update,
             threshold_json_btn_update,
             threshold_download_btn_update,
             avail_classes,          
-            avail_recordings        
+            avail_recordings
         )
 
     def update_datetime_defaults(processor_state):
@@ -1076,18 +1069,6 @@ def build_visualization_tab():
                         )
                     with gr.Column():
                         with gr.Row():
-                            recordings_select_all_btn = gr.Button("✓ All",   size="sm")
-                            recordings_deselect_all_btn = gr.Button("✕ None", size="sm")
-                        select_recordings_checkboxgroup = gr.CheckboxGroup(
-                            choices=[],
-                            value=[],
-                            label=loc.localize("viz-tab-recordings-label"),
-                            info=loc.localize("viz-tab-recordings-info"),
-                            interactive=True,
-                            elem_classes="custom-checkbox-group",
-                        )
-                    with gr.Column():
-                        with gr.Row():
                             sites_select_all_btn = gr.Button("✓ All",   size="sm")
                             sites_deselect_all_btn = gr.Button("✕ None", size="sm")
                         select_sites_checkboxgroup = gr.CheckboxGroup(
@@ -1302,11 +1283,9 @@ def build_visualization_tab():
                 metadata_columns["X"],
                 metadata_columns["Y"],
                 select_classes_checkboxgroup,
-                select_recordings_checkboxgroup,
             ],
             outputs=[
                 select_classes_checkboxgroup,
-                select_recordings_checkboxgroup,
                 processor_state,
                 class_thresholds_df,
                 threshold_json_select_btn,
@@ -1349,7 +1328,7 @@ def build_visualization_tab():
             inputs=[
                 processor_state,
                 select_classes_checkboxgroup,
-                select_recordings_checkboxgroup,
+                recordings_full_list_state,
                 select_sites_checkboxgroup,
                 date_range_start,
                 date_range_end,
@@ -1367,7 +1346,7 @@ def build_visualization_tab():
             inputs=[
                 processor_state,
                 select_classes_checkboxgroup,
-                select_recordings_checkboxgroup,
+                recordings_full_list_state,
                 select_sites_checkboxgroup,
                 date_range_start,
                 date_range_end,
@@ -1387,7 +1366,7 @@ def build_visualization_tab():
                 time_distribution_period,
                 use_boxplot,
                 select_classes_checkboxgroup,
-                select_recordings_checkboxgroup,
+                recordings_full_list_state,
                 select_sites_checkboxgroup,
                 date_range_start,
                 date_range_end,
@@ -1405,7 +1384,7 @@ def build_visualization_tab():
             inputs=[
                 processor_state, 
                 select_classes_checkboxgroup,
-                select_recordings_checkboxgroup,
+                recordings_full_list_state,
                 select_sites_checkboxgroup,
                 date_range_start,
                 date_range_end,
@@ -1423,7 +1402,7 @@ def build_visualization_tab():
             inputs=[
                 processor_state,
                 select_classes_checkboxgroup,
-                select_recordings_checkboxgroup,
+                recordings_full_list_state,
                 select_sites_checkboxgroup,
                 date_range_start,
                 date_range_end,
@@ -1445,18 +1424,6 @@ def build_visualization_tab():
         classes_deselect_all_btn.click(
             fn=lambda: gr.update(value=[]),
             outputs=[select_classes_checkboxgroup],
-            queue=False
-        )
-
-        recordings_select_all_btn.click(
-            fn=lambda full: gr.update(value=full),
-            inputs=[recordings_full_list_state],
-            outputs=[select_recordings_checkboxgroup],
-            queue=False
-        )
-        recordings_deselect_all_btn.click(
-            fn=lambda: gr.update(value=[]),
-            outputs=[select_recordings_checkboxgroup],
             queue=False
         )
 
