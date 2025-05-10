@@ -596,7 +596,8 @@ def build_visualization_tab():
         time_start_minute,
         time_end_hour,
         time_end_minute,
-        correctness_mode="Ignore correctness flags"
+        correctness_mode="Ignore correctness flags",
+        highlight_conf=False
     ):
         dp_correctness_mode = map_correctness_mode_to_dp(correctness_mode)
         if not proc_state or not proc_state.processor:
@@ -643,7 +644,10 @@ def build_visualization_tab():
                 conf_col=conf_col
             )
 
-            fig = plotter.plot(title="Temporal Distribution of Detections")
+            fig = plotter.plot(
+                title="Temporal Distribution of Detections",
+                highlight_confidence=highlight_conf
+            )
 
             if processor.metadata_centroid:
                 try:
@@ -1254,6 +1258,13 @@ def build_visualization_tab():
             loc.localize("viz-tab-plot-temporal-scatter-button-label"),
             variant="huggingface"
         )
+        with gr.Accordion("Temporal-scatter Options", open=False):
+            highlight_conf_checkbox = gr.Checkbox(
+                label="Highlight confidence scores",
+                value=False,           # default = keep current behaviour
+                info="Colour points by confidence and use different "
+                     "markers for each class"
+            )
         temporal_scatter_output = gr.Plot(
             label=loc.localize("viz-tab-temporal-scatter-plot-label"),
             visible=False
@@ -1443,7 +1454,8 @@ def build_visualization_tab():
                 time_start_minute,
                 time_end_hour,
                 time_end_minute,
-                correctness_mode
+                correctness_mode,
+                highlight_conf_checkbox
             ],
             outputs=[processor_state, temporal_scatter_output]
         )

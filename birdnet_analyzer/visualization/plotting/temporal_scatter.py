@@ -56,12 +56,17 @@ class TemporalScatterPlotter:
             self.color_map = {cls: extended_colors[i % len(extended_colors)] for i, cls in enumerate(sorted_classes)}
         return self.color_map
 
-    def plot(self, title: str = "Temporal Distribution of Detections") -> go.Figure:
+    def plot(
+        self,
+        title: str = "Temporal Distribution of Detections",
+        highlight_confidence: bool = False          # <── added
+    ) -> go.Figure:
         """
         Creates a temporal scatter plot showing detections by date and time of day.
         
         Args:
             title (str): The title for the plot
+            highlight_confidence (bool): Whether to highlight confidence scores in the plot
             
         Returns:
             plotly.graph_objects.Figure: The generated plotly figure
@@ -75,18 +80,49 @@ class TemporalScatterPlotter:
         # Get or create color map
         color_map = self.color_map or self._get_color_map(all_classes)
         
-        # Create the scatter plot - explicitly setting category_orders for consistent legend
-        fig = px.scatter(
-            self.data,
-            x='date',
-            y='decimal_time',
-            color=self.class_col,
-            color_discrete_map=color_map,
-            category_orders={self.class_col: all_classes},  # Explicitly set order
-            hover_data=['time_str', self.class_col, self.conf_col], # Updated hover_data
-            opacity=0.3,
-            title=title
-        )
+        # ---------- build figure ----------------------------------------------
+        if highlight_confidence:
+            # • colour = continuous confidence
+            # • symbol = categorical class  → different marker per species
+            fig = px.scatter(
+                self.data,
+                x="date",
+                y="decimal_time",
+                color=self.conf_col,
+                color_continuous_scale="Reds", # Changed to Reds
+                symbol=self.class_col,
+                category_orders={self.class_col: all_classes},
+                hover_data=['time_str', self.class_col, self.conf_col],
+                title=title,
+                opacity=1.0 # Keeping opacity consistent
+            )
+            # continuous colours need an explicit colour-bar title and positioning
+            fig.update_coloraxes(
+                colorbar_title="Confidence",
+                colorbar=dict(
+                    x=1.15, # Position color bar to the right of the class legend
+                    xanchor='left',
+                    yanchor='top', # Align top with species legend
+                    y=1.02, # Fine-tuned y-alignment with species legend y (was 1)
+                    len=0.75, # Adjust length if necessary
+                    thickness=20 # Adjust thickness if necessary
+                )
+            )
+            # Ensure the class legend (symbols) is still shown
+            fig.update_layout(legend_title_text='Species')
+        else:
+            # existing code (unaltered) ----------------------------------------
+            fig = px.scatter(
+                self.data,
+                x='date',
+                y='decimal_time',
+                color=self.class_col,
+                color_discrete_map=color_map,
+                category_orders={self.class_col: all_classes},  # Explicitly set order
+                hover_data=['time_str', self.class_col, self.conf_col], # Updated hover_data
+                opacity=0.3,
+                title=title
+            )
         
         # Format hover template
         for trace in fig.data:
@@ -94,7 +130,7 @@ class TemporalScatterPlotter:
                 "Date: %{x|%Y-%m-%d}<br>" +
                 "Time: %{customdata[0]}<br>" +      # Use time_str from customdata
                 "Species: %{customdata[1]}<br>" +   # class_col from customdata
-                "Confidence: %{customdata[2]:.3f}<br>" + # conf_col from customdata
+                "Confidence: %{customdata[2]:.2f}<br>" + # Changed to 2 decimal places
                 "<extra></extra>"
             )
         
@@ -108,16 +144,19 @@ class TemporalScatterPlotter:
                 tickvals=[0, 3, 6, 9, 12, 15, 18, 21, 24],
                 ticktext=['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', '24:00']
             ),
-            legend_title="Species",
             legend=dict(
                 x=1.02, 
                 y=1,
+                yanchor='top', # Explicitly anchor to top for alignment
                 itemsizing='constant',  # Makes legend symbols the same size
                 traceorder='normal'     # Use the order specified in category_orders
             ),
-            margin=dict(r=150),  # Add right margin for legend
+            margin=dict(r=200),  # Increased right margin to accommodate both legends
         )
-        
+        # Set legend title for the default case (not highlighting confidence)
+        if not highlight_confidence:
+            fig.update_layout(legend_title_text='Species')
+
         return fig
     
     def add_sunrise_sunset(
