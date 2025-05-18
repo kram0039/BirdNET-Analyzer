@@ -94,7 +94,7 @@ class TemporalScatterPlotter:
                 category_orders={self.class_col: all_classes},
                 hover_data=['time_str', self.class_col, self.conf_col],
                 title=title,
-                opacity=1.0 # Keeping opacity consistent
+                opacity=0.5
             )
             # continuous colours need an explicit colour-bar title and positioning
             fig.update_coloraxes(
