@@ -89,7 +89,7 @@ class TemporalScatterPlotter:
                 x="date",
                 y="decimal_time",
                 color=self.conf_col,
-                color_continuous_scale="Reds", # Changed to Reds
+                color_continuous_scale="Bluered", # Changed to Bluered
                 symbol=self.class_col,
                 category_orders={self.class_col: all_classes},
                 hover_data=['time_str', self.class_col, self.conf_col],
