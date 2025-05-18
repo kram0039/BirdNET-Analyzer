@@ -504,6 +504,9 @@ def build_visualization_tab():
 
         return (gr.update(choices=gradio_choices, value=default_selected_values), full_list_for_state)
 
+    def _show_spinner():  return gr.update(visible=True)
+    def _hide_spinner():  return gr.update(visible=False)
+
     def combine_time_components(hour, minute) -> typing.Optional[datetime.time]:
         if hour is None or minute is None:
             return None
@@ -1071,6 +1074,31 @@ def build_visualization_tab():
 
         load_data_btn = gr.Button("Load Data", variant="huggingface", elem_id="viz_load_refresh_data_btn") # Changed variant to huggingface
 
+        loading_indicator = gr.HTML(
+            """
+            <style>
+            /* wheel built only with CSS -> no external assets */
+            @keyframes spin {
+                to { transform: rotate(360deg); }
+            }
+            .spinner-wheel {
+                height: 22px;             /* adjust size here */
+                width: 22px;
+                border: 3px solid #000;          /* ring colour            */
+                border-top-color: transparent;      /* gap that makes motion  */
+                border-radius: 50%;
+                animation: spin .8s linear infinite;/* speed & easing         */
+            }
+            </style>
+
+            <div style='display:flex;align-items:center;gap:0.6rem;'>
+            <div class='spinner-wheel'></div>
+            <span><strong>Loading&nbsp;data&nbsp;…</strong></span>
+            </div>
+            """,
+            visible=False
+        )
+
         with gr.Group(visible=True) as selection_group:
             with gr.Accordion(loc.localize("viz-tab-class-recording-accordion-label"), open=False):
                 with gr.Row():
@@ -1307,6 +1335,10 @@ def build_visualization_tab():
         )
 
         load_data_btn.click(
+            fn=_show_spinner,
+            outputs=[loading_indicator],
+            queue=False
+        ).then(
             fn=update_selections,
             inputs=[
                 prediction_files_state,
@@ -1331,6 +1363,10 @@ def build_visualization_tab():
                 recordings_full_list_state      
             ],
             show_progress=True
+        ).then(
+            fn=_hide_spinner,
+            outputs=[loading_indicator],
+            queue=False
         ).success(
             fn=update_datetime_defaults,
             inputs=[processor_state],
