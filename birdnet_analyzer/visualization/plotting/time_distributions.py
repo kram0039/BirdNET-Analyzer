@@ -160,7 +160,7 @@ class TimeDistributionPlotter:
                         x=x_categories_for_species, # Use textual categories for x
                         name=str(cls),
                         marker_color=color,
-                        boxpoints='outliers',
+                        boxpoints=False, # Changed from 'outliers' to False
                         jitter=0.3,
                         pointpos=0, # Outliers relative to box
                         line=dict(width=1),
