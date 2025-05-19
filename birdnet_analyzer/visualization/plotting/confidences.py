@@ -56,6 +56,29 @@ class ConfidencePlotter:
             color_dict = {cls: extended_colors[i % len(extended_colors)] for i, cls in enumerate(sorted_classes)}
         return color_dict
 
+    def _confidence_bins(self, step: float = 0.1
+                     ) -> tuple[np.ndarray, list[str]]:
+        """
+        Build equally-wide bins between 0 and 1 **and** readable labels
+        that accurately reflect numpy.histogram's binning convention.
+        Example (step=0.1):
+            edges  = np.array([0.0, 0.1, 0.2, ..., 1.0])
+            labels = ['[0.0, 0.1)', '[0.1, 0.2)', ..., '[0.9, 1.0]']
+        """
+        # Generate edges (inclusive lower, inclusive upper for last bin)
+        edges = np.round(np.arange(0, 1 + step, step), 2)
+        # Build labels matching numpy.histogram behavior
+        labels = []
+        num_bins = len(edges) - 1
+        for i in range(num_bins):
+            lower_edge = edges[i]
+            upper_edge = edges[i+1]
+            if i < num_bins - 1:  # For all bins except the last one
+                labels.append(f"[{lower_edge:.1f}, {upper_edge:.1f})")
+            else:  # For the last bin
+                labels.append(f"[{lower_edge:.1f}, {upper_edge:.1f}]")
+        return edges, labels
+
     def plot_histogram_matplotlib(
         self,
         bins: int = 30,
@@ -113,28 +136,56 @@ class ConfidencePlotter:
         Each bin represents a 0.1-width range of confidence scores.
         """
         if self.data.empty:
-            raise ValueError("No data to plot")
+            # Return a figure with an annotation if data is empty, instead of raising an error
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No sites available – nothing to plot",
+                showarrow=False,
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                font=dict(size=18))
+            fig.update_layout(title=title)
+            return fig
         
         # Set up confidence bins (10 bins from 0 to 1)
-        x_title = 'Confidence Score'
-        bin_edges = np.linspace(0, 1, 11)  # 11 edges for 10 bins: 0, 0.1, 0.2, ..., 1.0
-        bin_labels = [f"≤ {edge:.1f}" for edge in bin_edges[1:]]  # 0.1, 0.2, ..., 1.0
+        bin_edges, bin_labels = self._confidence_bins(step=0.1)
+        x_title = "Confidence score (bin width 0.1)"
         
         # Create figure
         fig = go.Figure()
         classes = sorted(self.data[self.class_col].unique())
         color_map = self._get_color_map(classes)
+
+        # Detect global emptiness (GUI-friendly: return figure w/ annotation)
+        if self.data[self.conf_col].dropna().empty:
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No sites available – nothing to plot",
+                showarrow=False,
+                x=0.5, y=0.5, xref="paper", yref="paper",
+                font=dict(size=18))
+            fig.update_layout(title=title)
+            return fig
         
         # Plot histogram for each class
         for cls in classes:
             cls_data = self.data[self.data[self.class_col] == cls]
             
             # Skip empty classes
-            if cls_data.empty:
+            if cls_data.empty or cls_data[self.conf_col].dropna().empty:
                 continue
             
-            # Calculate histogram
-            counts, _ = np.histogram(cls_data[self.conf_col].dropna(), bins=bin_edges)
+            # Calculate histogram - assuming 'site_id' is the column for unique sites
+            # If your site identifier column has a different name, replace 'site_id' accordingly.
+            if 'site_id' in cls_data.columns:
+                unique_sites = (cls_data
+                                .groupby('site_id', as_index=False)
+                                [self.conf_col]          # Any column will do
+                                .agg('first'))           # Deduplicate
+                counts, _ = np.histogram(unique_sites[self.conf_col].dropna(),
+                                          bins=bin_edges)
+            else:
+                # Fallback to row counts if 'site_id' is not present
+                counts, _ = np.histogram(cls_data[self.conf_col].dropna(), bins=bin_edges)
             
             # Add bar trace
             fig.add_trace(go.Bar(
@@ -146,8 +197,7 @@ class ConfidencePlotter:
                 hovertemplate=(
                     "Bin: %{x}<br>"
                     "Species: " + str(cls) + "<br>"
-                    "Count: %{y}<br>"
-                    "<extra></extra>"
+                    "Sites: %{y}<extra></extra>"
                 )
             ))
         
@@ -156,7 +206,7 @@ class ConfidencePlotter:
             barmode='group',
             title=title,
             xaxis_title=x_title,
-            yaxis_title='Count',
+            yaxis_title='Number of sites',
             legend_title='Species',
             legend=dict(x=1.02, y=1),
             margin=dict(r=150),
