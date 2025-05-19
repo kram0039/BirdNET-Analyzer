@@ -399,6 +399,42 @@ def build_visualization_tab():
                         print(f"Error setting metadata: {e}")
                         gr.Warning(f"Error processing metadata: {e}")
 
+        # Display toast notification with data summary
+        if proc:
+            summary_df = proc.get_complete_data()
+            if not summary_df.empty:
+                n_records = len(summary_df)
+                
+                n_files = 0
+                if 'Recording' in summary_df.columns:
+                    n_files = summary_df['Recording'].nunique(dropna=True)
+                elif prediction_files: # Fallback: count of initial file objects if 'Recording' column is not informative
+                    # Ensure prediction_files is a list before len()
+                    if isinstance(prediction_files, list):
+                        n_files = len(prediction_files)
+                    elif prediction_files is not None: # Single file object
+                        n_files = 1
+                
+                n_sites = 0
+                if 'Site' in summary_df.columns:
+                    n_sites = summary_df['Site'].nunique(dropna=True)
+
+                msg = (
+                    f"Loaded {n_records:,} detection{'s' if n_records != 1 else ''} "
+                    f"from "
+                    f"{'no' if n_sites == 0 else n_sites} "
+                    f"site{'s' if n_sites != 1 else ''} "
+                    f"across {n_files} file{'s' if n_files != 1 else ''}."
+                )
+
+                if n_sites == 0 and meta_site: # If site column was expected (meta_site configured) but none found
+                    gr.Warning(msg)
+                else:
+                    gr.Info(msg)
+            elif prediction_files: # Proc exists, but summary_df is empty, but files were given
+                 gr.Warning("Data loaded, but no detections found after initial processing.")
+        # End of toast notification logic
+
         class_thresholds_init_df = None
         threshold_df_update = gr.update(visible=False, value=None)
         threshold_json_btn_update = gr.update(visible=False)
