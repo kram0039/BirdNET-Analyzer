@@ -12,6 +12,7 @@ import re
 import pathlib
 import itertools
 import functools
+import posixpath
 from typing import Dict, List, Optional, Tuple, Any
 
 import warnings
@@ -191,26 +192,28 @@ class DataProcessor:
 
         Returns the **first** match found (priority 1 → 3) or ``None``.
         """
-        if not recording_path or not isinstance(recording_path, str) or not valid_site_ids:
+        # ------------------------------------------------------------------
+        # Cross-platform implementation
+        # ------------------------------------------------------------------
+        if not recording_path or not valid_site_ids:
             return None
 
-        # 1️⃣  whole stem -----------------------------------------------------------
-        path = pathlib.PurePath(recording_path)
-        stem = path.stem                      # e.g., "ABC123_20240503_120000"
-        if stem in valid_site_ids:
-            return stem
+        # ②  Split on either slash so we do *not* rely on pathlib semantics
+        import re, itertools, posixpath
+        parts: list[str] = re.split(r"[\\\\/]", str(recording_path))
 
-        # 2️⃣  underscore-delimited parts -----------------------------------------
-        for part in stem.split("_"):
-            if part in valid_site_ids:
-                return part
+        # ②a add the stem (filename without extension) as another candidate
+        if parts:
+            parts.append(posixpath.splitext(parts[-1])[0])
 
-        # 3️⃣  directory names (outer → inner) ------------------------------------
-        #    PurePath.parts gives ('/', 'sites', 'ABC123', 'rec', 'xyz.wav') or ('c:\\', 'sites', ...)
-        #    Skip root (parts[0]) & filename (parts[-1]), walk top-to-bottom.
-        for folder in path.parts[1:-1]:
-            if folder in valid_site_ids:
-                return folder
+        # ②b Windows is case-insensitive – normalise for matching
+        valid_lower = {sid.casefold(): sid for sid in valid_site_ids}
+
+        # ① full tokens → ② underscore fragments → ③ folder names
+        for token in parts + list(itertools.chain.from_iterable(p.split("_") for p in parts)):
+            hit = valid_lower.get(token.casefold())
+            if hit:
+                return hit           # return *original* site ID (correct case)
 
         return None
 
@@ -247,17 +250,26 @@ class DataProcessor:
         # --- Derive recording path, filename, and stem ---
         try:
             if recording_col in df.columns and df[recording_col].notna().any():
-                 df["recording_path_str"] = df[recording_col].astype(str)
+                # ①  Replace back-slashes once; after that we can treat the string as POSIX
+                df["recording_path_str"] = (
+                    df[recording_col]
+                    .astype(str)
+                    .str.replace("\\\\", "/", regex=False)
+                )
             elif "source_file" in df.columns: # Fallback to source_file
-                 df["recording_path_str"] = df["source_file"].astype(str)
+                 df["recording_path_str"] = (
+                    df["source_file"]
+                    .astype(str)
+                    .str.replace("\\\\", "/", regex=False)
+                )
             else:
                  df["recording_path_str"] = "unknown_path"
 
             df["recording_filename_with_ext"] = df["recording_path_str"].apply(
-                lambda x: os.path.basename(str(x)) if pd.notnull(x) else ""
+                lambda p: posixpath.basename(p) if pd.notnull(p) else ""
             )
             df["recording_filename"] = df["recording_filename_with_ext"].apply(
-                lambda x: os.path.splitext(x)[0] if pd.notnull(x) else ""
+                lambda p: posixpath.splitext(p)[0] if pd.notnull(p) else ""
             )
             # Clean up potential empty strings
             for col_name in ["recording_path_str", "recording_filename_with_ext", "recording_filename"]:
