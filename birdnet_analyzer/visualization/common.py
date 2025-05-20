@@ -26,11 +26,20 @@ class ProcessorState:
 
 
 def convert_timestamp_to_datetime(timestamp):
-    """Convert Gradio DateTime timestamp to pandas datetime."""
+    """
+    Convert the epoch seconds that the <DateTime> component sends back
+    into a *local* (Europe/Berlin) wall-clock datetime.
+    """
     if timestamp is None:
         return None
     try:
-        # Convert timestamp to pandas datetime
-        return pd.to_datetime(timestamp, unit='s')
-    except:
+        # (1) build an *aware* UTC datetime
+        dt_utc = pd.to_datetime(timestamp, unit="s", utc=True)
+
+        # (2) convert to the user’s zone
+        dt_local = dt_utc.tz_convert("Europe/Berlin")
+
+        # (3) drop the tz info (Gradio expects naive datetimes)
+        return dt_local.tz_localize(None)
+    except Exception:
         return None
