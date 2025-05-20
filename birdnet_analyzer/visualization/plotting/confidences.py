@@ -139,7 +139,7 @@ class ConfidencePlotter:
             # Return a figure with an annotation if data is empty, instead of raising an error
             fig = go.Figure()
             fig.add_annotation(
-                text="No sites available – nothing to plot",
+                text="No detections available – nothing to plot",
                 showarrow=False,
                 x=0.5, y=0.5, xref="paper", yref="paper",
                 font=dict(size=18))
@@ -159,7 +159,7 @@ class ConfidencePlotter:
         if self.data[self.conf_col].dropna().empty:
             fig = go.Figure()
             fig.add_annotation(
-                text="No sites available – nothing to plot",
+                text="No detections available – nothing to plot",
                 showarrow=False,
                 x=0.5, y=0.5, xref="paper", yref="paper",
                 font=dict(size=18))
@@ -174,18 +174,8 @@ class ConfidencePlotter:
             if cls_data.empty or cls_data[self.conf_col].dropna().empty:
                 continue
             
-            # Calculate histogram - assuming 'site_id' is the column for unique sites
-            # If your site identifier column has a different name, replace 'site_id' accordingly.
-            if 'site_id' in cls_data.columns:
-                unique_sites = (cls_data
-                                .groupby('site_id', as_index=False)
-                                [self.conf_col]          # Any column will do
-                                .agg('first'))           # Deduplicate
-                counts, _ = np.histogram(unique_sites[self.conf_col].dropna(),
-                                          bins=bin_edges)
-            else:
-                # Fallback to row counts if 'site_id' is not present
-                counts, _ = np.histogram(cls_data[self.conf_col].dropna(), bins=bin_edges)
+            # Calculate histogram for detections
+            counts, _ = np.histogram(cls_data[self.conf_col].dropna(), bins=bin_edges)
             
             # Add bar trace
             fig.add_trace(go.Bar(
@@ -197,7 +187,7 @@ class ConfidencePlotter:
                 hovertemplate=(
                     "Bin: %{x}<br>"
                     "Species: " + str(cls) + "<br>"
-                    "Sites: %{y}<extra></extra>"
+                    "Count: %{y}<extra></extra>"
                 )
             ))
         
@@ -206,7 +196,7 @@ class ConfidencePlotter:
             barmode='group',
             title=title,
             xaxis_title=x_title,
-            yaxis_title='Number of sites',
+            yaxis_title='Count', # Updated y-axis title
             legend_title='Species',
             legend=dict(x=1.02, y=1),
             margin=dict(r=150),
