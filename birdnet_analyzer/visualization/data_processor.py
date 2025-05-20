@@ -762,22 +762,31 @@ class DataProcessor:
             else:
                 print("Warning: 'Class' column not found for filtering.")
 
+        # --------------------------------------------------------------
+        # DATE FILTER  (inclusive start, inclusive end)
+        # --------------------------------------------------------------
         if date_range_start is not None or date_range_end is not None:
-            if 'Date' in df.columns and pd.api.types.is_datetime64_any_dtype(df['Date']):
+            if "Date" in df.columns and pd.api.types.is_datetime64_any_dtype(df["Date"]):
                 start_date = convert_timestamp_to_datetime(date_range_start)
-                end_date = convert_timestamp_to_datetime(date_range_end)
+                end_date   = convert_timestamp_to_datetime(date_range_end)
 
-                start_date = pd.Timestamp(start_date.date()) if start_date else None
-                end_date = pd.Timestamp(end_date.date()) if end_date else None
+                if start_date is not None:
+                    # keep midnight -> 00:00  (inclusive)
+                    start_date = pd.Timestamp(start_date.date())
 
-                if start_date and end_date:
-                    df = df[df['Date'].between(start_date, end_date, inclusive='both')]
-                elif start_date:
-                    df = df[df['Date'] >= start_date]
-                elif end_date:
-                    df = df[df['Date'] <= end_date]
+                if end_date is not None:
+                    # add one full day and use a *strict* “<” test later
+                    # so 2024-12-19 includes everything up to 23:59:59
+                    end_date = pd.Timestamp(end_date.date()) + pd.Timedelta(days=1)
+
+                if start_date is not None and end_date is not None:
+                    df = df[(df["Date"] >= start_date) & (df["Date"] < end_date)]
+                elif start_date is not None:
+                    df = df[df["Date"] >= start_date]
+                elif end_date is not None:
+                    df = df[df["Date"] < end_date]
             else:
-                print("Warning: 'Date' column not found or not datetime type for filtering.")
+                print("Warning: 'Date' column missing or not datetime typed.")
 
         if time_start is not None or time_end is not None:
             if 'Time' in df.columns:
