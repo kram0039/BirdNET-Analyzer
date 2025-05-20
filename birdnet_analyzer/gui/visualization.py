@@ -487,7 +487,8 @@ def build_visualization_tab():
             threshold_json_btn_update,
             threshold_download_btn_update,
             avail_classes,          
-            avail_recordings
+            avail_recordings,
+            gr.update(value=0.5)  # Added: Reset global threshold slider to 0.5
         )
 
     def update_datetime_defaults(processor_state):
@@ -1394,7 +1395,8 @@ def build_visualization_tab():
                 threshold_json_select_btn,
                 threshold_template_download_btn,
                 classes_full_list_state,        
-                recordings_full_list_state      
+                recordings_full_list_state,     
+                confidence_slider              
             ],
             show_progress=True
         ).then(
