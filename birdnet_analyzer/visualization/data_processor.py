@@ -830,3 +830,15 @@ class DataProcessor:
                 print("Warning: 'Confidence' column not found for applying global minimum confidence.")
 
         return df
+
+    # ------------------------------------------------------------------ #
+    #  Public helper – allows other modules to ask  “is this processor   #
+    #  still safe to use or do I have to rebuild it?”                    #
+    # ------------------------------------------------------------------ #
+    def is_valid(self) -> bool:
+        """True iff the prediction directory still exists *and* is not empty."""
+        try:
+            p = pathlib.Path(self.prediction_directory_path)
+            return p.exists() and any(p.iterdir())
+        except Exception:
+            return False

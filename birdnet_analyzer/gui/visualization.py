@@ -98,10 +98,12 @@ def build_visualization_tab():
     MAX_DEFAULT_CLASSES = 5  # Define the class limit
 
     def ensure_tmp_dir(file_paths, cache, prefix="birdnet_"):
+        # defer deletion until we know the processor rebuild succeeded
+        old_tmp = cache["temp_dir"]
         if not file_paths:
-            if cache["temp_dir"] and Path(cache["temp_dir"]).exists():
-                print(f"No files selected, removing old temp dir: {cache['temp_dir']}")
-                shutil.rmtree(cache["temp_dir"], ignore_errors=True)
+            if old_tmp and Path(old_tmp).exists():
+                print(f"No files selected, removing old temp dir: {old_tmp}")
+                shutil.rmtree(old_tmp, ignore_errors=True)
             cache["hash"] = None
             cache["temp_dir"] = None
             return None
@@ -122,9 +124,9 @@ def build_visualization_tab():
             print("Warnings accessing file paths:", errors)
 
         if not valid_paths:
-            if cache["temp_dir"] and Path(cache["temp_dir"]).exists():
-                print(f"No valid files found, removing old temp dir: {cache['temp_dir']}")
-                shutil.rmtree(cache["temp_dir"], ignore_errors=True)
+            if old_tmp and Path(old_tmp).exists():
+                print(f"No valid files found, removing old temp dir: {old_tmp}")
+                shutil.rmtree(old_tmp, ignore_errors=True)
             cache["hash"] = None
             cache["temp_dir"] = None
             gr.Warning("No valid files found in selection.")
@@ -138,8 +140,8 @@ def build_visualization_tab():
             current_hash = hashlib.sha256(hash_content).hexdigest()
         except FileNotFoundError as e:
             print(f"Error accessing file stats for hashing: {e}. Clearing cache.")
-            if cache["temp_dir"] and Path(cache["temp_dir"]).exists():
-                shutil.rmtree(cache["temp_dir"], ignore_errors=True)
+            if old_tmp and Path(old_tmp).exists():
+                shutil.rmtree(old_tmp, ignore_errors=True)
             cache["hash"] = None
             cache["temp_dir"] = None
             raise gr.Error(f"Error accessing file: {e}. Please check file paths.")
@@ -148,9 +150,9 @@ def build_visualization_tab():
             print(f"Cache hit for {prefix[:-1]} files. Reusing temp dir: {cache['temp_dir']}")
             return cache["temp_dir"]
 
-        if cache["temp_dir"] and Path(cache["temp_dir"]).exists():
-            print(f"Cache miss or invalid temp dir. Removing old temp dir: {cache['temp_dir']}")
-            shutil.rmtree(cache["temp_dir"], ignore_errors=True)
+        if old_tmp and Path(old_tmp).exists():
+            print(f"Cache miss or invalid temp dir. Removing old temp dir: {old_tmp}")
+            shutil.rmtree(old_tmp, ignore_errors=True)
 
         new_temp_dir = tempfile.mkdtemp(prefix=prefix)
         print(f"Created new temp dir: {new_temp_dir}")
@@ -232,15 +234,11 @@ def build_visualization_tab():
         fp = fingerprint_prediction_dir(prediction_dir, cols_pred)
         proc = _PROCESSOR_CACHE.get(fp)
 
-        if proc is not None:
-            try:
-                cached_proc_path = Path(proc.prediction_directory_path)
-                if not cached_proc_path.exists() or not any(cached_proc_path.iterdir()):
-                    print(f"⚠️ Cached DataProcessor's directory {cached_proc_path} is missing or empty. Rebuilding.")
-                    proc = None
-            except Exception as e:
-                print(f"⚠️ Error validating cached DataProcessor's directory ({proc.prediction_directory_path if proc else 'N/A'}): {e}. Rebuilding.")
-                proc = None
+        # ① Reject the cache entry if its backing files vanished
+        if proc is not None and not proc.is_valid():
+            print(f"⚠️ Cached DataProcessor (key={fp[:8]}) became invalid – rebuilding.")
+            del _PROCESSOR_CACHE[fp]      # remove broken entry
+            proc = None
 
         if proc is None:
             print(f"⏳  Cache miss – building DataProcessor for {prediction_dir}")
