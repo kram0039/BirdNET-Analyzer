@@ -765,7 +765,7 @@ def build_visualization_tab():
                 gr.Warning("No data matches the selected filters for the spatial plot.")
                 empty_fig = go.Figure()
                 empty_fig.update_layout(title="Spatial Distribution (No Data)")
-                return [proc_state, gr.update(value=empty_fig, visible=True)]
+                return proc_state, gr.update(value=empty_fig, visible=True)
 
             if 'Latitude' not in filtered_df.columns or 'Longitude' not in filtered_df.columns:
                  raise gr.Error("Latitude/Longitude columns missing after filtering. Check metadata processing and merging.")
@@ -801,7 +801,7 @@ def build_visualization_tab():
                 title="Spatial Distribution of Predictions by Class"
             )
 
-            return [proc_state, gr.update(value=fig, visible=True)]
+            return proc_state, gr.update(value=fig, visible=True)
         except Exception as e:
             print(f"Error creating map: {str(e)}")
             traceback.print_exc()
