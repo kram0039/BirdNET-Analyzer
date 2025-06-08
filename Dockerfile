@@ -1,15 +1,31 @@
-# Build from Python slim
-FROM python:3.11
+# Base Lambda Python 3.11 image
+FROM public.ecr.aws/lambda/python:3.11
 
-# Install required packages while keeping the image small
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg  && rm -rf /var/lib/apt/lists/*
+# --- OS package updates ---
+RUN yum update -y && yum clean all
 
-# Import all scripts
-COPY . ./
+# --- Install build tools and audio/video dependencies ---
+RUN yum install -y \
+    gcc \
+    gcc-c++ \
+    make \
+    cmake \
+    sox \
+    sox-devel \
+    ffmpeg \
+    && yum clean all
 
-# Install required Python packages
-RUN pip3 install --no-cache-dir -r requirements.txt
+# --- Copy only requirements first to leverage caching ---
+COPY requirements.txt .
 
-# Add entry point to run the script
-ENTRYPOINT [ "python3" ]
-CMD [ "-m", "birdnet_analyzer.analyze" ]
+# --- Install Python dependencies ---
+RUN pip install -r requirements.txt
+
+# --- Copy BirdNET-Analyzer source code (excluding requirements.txt again) ---
+COPY . ${LAMBDA_TASK_ROOT}
+
+# --- Copy Lambda handler separately (to optimize changes) ---
+COPY lambda_handler.py ${LAMBDA_TASK_ROOT}
+
+# --- Define the Lambda handler command ---
+CMD ["lambda_handler.lambda_handler"]
